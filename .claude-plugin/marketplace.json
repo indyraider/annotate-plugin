@@ -1,0 +1,12 @@
+{
+  "name": "annotate-tools",
+  "owner": { "name": "indyraider", "email": "matt@tailwatersflyfishing.com" },
+  "plugins": [
+    {
+      "name": "annotate",
+      "source": "./",
+      "description": "Point-and-comment on your live local app in a Playwright browser; comments flow back to Claude Code to fix.",
+      "version": "1.0.0"
+    }
+  ]
+}

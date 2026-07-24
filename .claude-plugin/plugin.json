@@ -1,0 +1,14 @@
+{
+  "name": "annotate",
+  "displayName": "Annotate — point & comment",
+  "version": "1.0.0",
+  "description": "Point-and-comment on your live local web app in a Playwright browser; comments flow back to Claude Code to fix. Inspect-element hover with a computed-style card, comment-pin markers, crosshair cursor, Shift-to-click-through, and a UI that auto-themes to your app. Requires a Playwright MCP server (bundled by default).",
+  "author": { "name": "indyraider", "email": "matt@tailwatersflyfishing.com" },
+  "homepage": "https://github.com/indyraider/annotate-plugin",
+  "repository": "https://github.com/indyraider/annotate-plugin",
+  "license": "MIT",
+  "keywords": ["annotate", "review", "playwright", "ui", "feedback", "inspect", "dev-tool"],
+  "mcpServers": {
+    "playwright": { "command": "npx", "args": ["-y", "@playwright/mcp@latest"] }
+  }
+}
