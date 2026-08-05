@@ -34,6 +34,68 @@
     return parts.join(" > ");
   }
 
+  // Pure: box-fit a w×h image inside `max` on its longest side, never upscaling.
+  // Attached screenshots are downscaled through this before they're stored — a raw
+  // Retina paste is multi-MB base64 and would blow the localStorage quota alone.
+  function fitDimensions(w, h, max) {
+    if (!(w > 0) || !(h > 0)) return { w: 0, h: 0 };
+    var scale = Math.min(1, max / Math.max(w, h));
+    return { w: Math.max(1, Math.round(w * scale)), h: Math.max(1, Math.round(h * scale)) };
+  }
+
+  // Pure: which kind of Next.js request is this, judged only by its headers?
+  // Next tags Server Actions with `Next-Action` and RSC navigation payloads with `RSC`.
+  // A request carrying both is an action — actions are posted from an already-RSC context.
+  // Accepts a Headers instance (whose own .get is case-insensitive) or a plain object.
+  function classifyRequest(headers) {
+    if (!headers) return null;
+    var get = function (name) {
+      if (typeof headers.get === "function") return headers.get(name);
+      for (var k in headers) {
+        if (Object.prototype.hasOwnProperty.call(headers, k) && k.toLowerCase() === name) return headers[k];
+      }
+      return null;
+    };
+    if (get("next-action")) return "action";
+    if (get("rsc")) return "rsc";
+    return null;
+  }
+
+  // Pure: given the browser's resource timings, did this navigation actually hit the server?
+  // Next marks an RSC navigation payload with a `?_rsc=` QUERY PARAM (not a header we can see)
+  // and does NOT route it through window.fetch — and it starts the request BEFORE pushState
+  // fires. So detection reads resource timings and looks BACKWARD from the moment the URL
+  // changed. Returns the matching entry, or null when the click genuinely needed no server
+  // request (a client router cache hit).
+  function findRscEntry(entries, toUrl, at, lookbackMs) {
+    if (!entries || !entries.length) return null;
+    var path = String(toUrl).replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+    for (var i = entries.length - 1; i >= 0; i--) {
+      var e = entries[i];
+      if (e.startTime < at - lookbackMs) break;          // chronological — nothing older can match
+      if (e.name.indexOf("_rsc=") === -1) continue;
+      if (e.name.split("?")[0].indexOf(path) === -1) continue;
+      return e;
+    }
+    return null;
+  }
+
+  // Pure: bounded FIFO for perf entries. An image-heavy scroll could otherwise hand the
+  // agent a payload big enough to bloat its context, so the buffer caps and drops oldest —
+  // and reports how many it lost on the next drain, so truncation is never silent.
+  function createPerfBuffer(cap) {
+    var items = [], dropped = 0;
+    return {
+      push: function (e) { items.push(e); if (items.length > cap) { items.shift(); dropped++; } },
+      drain: function (now) {
+        var out = items; items = [];
+        if (dropped) { out = [{ t: now, kind: "dropped", n: dropped }].concat(out); dropped = 0; }
+        return out;
+      },
+      size: function () { return items.length; },
+    };
+  }
+
   function __setupAnnotator() {
     if (window.__annotator) return;                 // idempotent re-inject guard
     window.__annotator = { mode: "off" };
@@ -45,6 +107,52 @@
     window.__annotations = load();
     var seq = window.__annotations.reduce(function (m, a) { return Math.max(m, a.n || 0); }, 0);
     var waiter = null; // { resolve, timer } — one-shot long-poll resolver
+
+    // ---- attached images ----
+    // Kept OUT of the `__annotations` blob on purpose: one pasted screenshot can
+    // exceed the whole localStorage quota, and a throwing setItem there would
+    // silently stop persisting every annotation. Each image gets its own key, and
+    // an in-memory map is the fallback when the quota says no.
+    var IMG_KEY = "__ann_img_";
+    var IMG_MAX_PX = 1600;                       // longest side after downscale
+    window.__annotatorImages = window.__annotatorImages || {};
+    function putImage(id, dataUrl) {
+      window.__annotatorImages[id] = dataUrl;    // always in memory (survives a full quota)
+      try { localStorage.setItem(IMG_KEY + id, dataUrl); } catch (e) {}  // …and disk when it fits
+    }
+    /** Read-and-forget: the agent pulls each image once, then it's dropped from memory
+     *  and localStorage. The most recent one stays retrievable until the NEXT take
+     *  replaces it — a transfer that fails after the call ran (bad output path, tool
+     *  error) would otherwise destroy the only copy, which is exactly what happened the
+     *  first time this shipped. Retrying the same id gets the image back. */
+    window.__annotatorImageTake = function (id) {
+      var last = window.__annotatorLastTaken;
+      var d = window.__annotatorImages[id] || null;
+      if (!d) { try { d = localStorage.getItem(IMG_KEY + id); } catch (e) { d = null; } }
+      if (!d && last && last.id === id) d = last.data;      // retry of a failed transfer
+      if (d) window.__annotatorLastTaken = { id: id, data: d };
+      delete window.__annotatorImages[id];
+      try { localStorage.removeItem(IMG_KEY + id); } catch (e) {}
+      return d;
+    };
+    /** File/Blob → downscaled JPEG data URL. Rejects non-images by resolving null. */
+    function toDataUrl(file) {
+      return new Promise(function (resolve) {
+        if (!file || !/^image\//.test(file.type)) return resolve(null);
+        var url = URL.createObjectURL(file);
+        var img = new Image();
+        img.onload = function () {
+          var d = fitDimensions(img.naturalWidth, img.naturalHeight, IMG_MAX_PX);
+          var cv = document.createElement("canvas");
+          cv.width = d.w; cv.height = d.h;
+          cv.getContext("2d").drawImage(img, 0, 0, d.w, d.h);
+          URL.revokeObjectURL(url);
+          try { resolve(cv.toDataURL("image/jpeg", 0.9)); } catch (e) { resolve(null); }
+        };
+        img.onerror = function () { URL.revokeObjectURL(url); resolve(null); };
+        img.src = url;
+      });
+    }
 
     // ---- adaptive palette derived from the host page ----
     // ACCENT is the tool's own signature color (the one thing that stays constant
@@ -159,6 +267,7 @@
       [["Alt", "A"], "Toggle on / off"],
       [["Hover"], "Inspect element"],
       [["Click"], "Leave a comment"],
+      [["⌘", "V"], "Paste/drop an image"],
       [["⌘/Ctrl", "↵"], "Save comment"],
       [["Shift"], "Hold to click through"],
       [["Esc"], "Cancel comment"]
@@ -173,16 +282,172 @@
     Object.assign(pill.style, { padding: "7px 13px", borderRadius: "999px", font: "600 12px/1 " + SANS, cursor: "pointer", userSelect: "none", border: "1px solid " + pal.border, boxShadow: "0 2px 10px rgba(0,0,0,.28)" });
     pill.addEventListener("click", toggle);
     controls.append(help, pill); bar.appendChild(controls);
-    function updatePill() {
-      var on = window.__annotator.mode === "on", c = window.__annotations.length;
-      pill.textContent = (on ? "● Annotate: ON" : "○ Annotate: OFF") + (c ? " · " + c : "");
-      pill.style.background = on ? pal.accent : pal.surface2;
-      pill.style.color = on ? pal.accentFg : pal.text2;
+    // ---- measure mode: passive recorders ----------------------------------------
+    // Everything here is read-only observation. Nothing intercepts, blocks or rewrites a
+    // page interaction — that is what makes it safe to leave running while Matt uses the app.
+    var perfBuf = null, perfStop = null;
+
+    // Next starts the `?_rsc=` navigation request BEFORE it pushes the new URL, so detection
+    // looks BACKWARD from the URL change by this much. (Measured live: the request began 45ms
+    // before pushState. A forward-only window reported every navigation as a cache hit —
+    // exactly backwards.) NAV_SETTLE_MS then allows for the resource entry arriving late.
+    var RSC_LOOKBACK_MS = 1200;
+    var NAV_SETTLE_MS = 800;
+
+    function startMeasuring() {
+      if (perfStop) return;                                   // idempotent re-entry
+      perfBuf = perfBuf || createPerfBuffer(500);
+      var buf = perfBuf, obs = [], pendingNav = null, navTimer = null;
+      var stamp = function () { return Math.round(performance.now()); };
+
+      // --- client-side navigation (channel switching) ---
+      // Next routes via history.pushState; a nav that produces NO RSC request was served
+      // from the client router cache — the direct answer to the staleTimes question.
+      // Resolve exactly once, whichever signal lands first.
+      function settleNav(rec, entry) {
+        if (rec.__done) return;
+        rec.__done = true;
+        if (pendingNav === rec) pendingNav = null;
+        clearTimeout(navTimer);
+        if (entry) { rec.servedFromCache = false; rec.rscMs = Math.round(entry.duration); }
+        delete rec.__done;
+        buf.push(rec); updatePill();
+      }
+      function onUrlChange(from, to) {
+        if (from === to) return;
+        var t0 = performance.now();
+        var rec = { t: stamp(), kind: "nav", from: from, to: to, servedFromCache: true, rscMs: null, toPaintMs: null };
+        requestAnimationFrame(function () {
+          requestAnimationFrame(function () { rec.toPaintMs = Math.round(performance.now() - t0); });
+        });
+        // The request usually already happened — look backward first.
+        var hit = null;
+        try { hit = findRscEntry(performance.getEntriesByType("resource"), to, t0, RSC_LOOKBACK_MS); } catch (e) {}
+        if (hit) return settleNav(rec, hit);
+        // Otherwise wait briefly in case its resource entry has not been delivered yet.
+        pendingNav = { rec: rec, to: to, at: t0 };
+        clearTimeout(navTimer);
+        navTimer = setTimeout(function () {
+          var p = pendingNav;
+          if (!p || p.rec !== rec) return;
+          var late = null;
+          try { late = findRscEntry(performance.getEntriesByType("resource"), p.to, p.at, RSC_LOOKBACK_MS); } catch (e) {}
+          settleNav(rec, late);
+        }, NAV_SETTLE_MS);
+      }
+      var origPush = history.pushState, origReplace = history.replaceState;
+      history.pushState = function () { var f = location.href; var r = origPush.apply(this, arguments); onUrlChange(f, location.href); return r; };
+      history.replaceState = function () { var f = location.href; var r = origReplace.apply(this, arguments); onUrlChange(f, location.href); return r; };
+      var onPop = function () { onUrlChange("(popstate)", location.href); };
+      window.addEventListener("popstate", onPop);
+
+      // --- server actions + RSC payloads ---
+      // `ms` is time to response HEADERS: the fetch promise resolves there, and reading the
+      // body to measure it would consume the stream the framework needs. That is the server's
+      // thinking time, which is the number we actually want.
+      var origFetch = window.fetch;
+      window.fetch = function (input, init) {
+        var kind = null;
+        try {
+          kind = classifyRequest((init && init.headers) || (input && input.headers) || null);
+        } catch (e) { kind = null; }
+        if (!kind) return origFetch.apply(this, arguments);
+        var url = typeof input === "string" ? input : (input && input.url) || "";
+        var t0 = performance.now();
+        // Only actions are recorded here. Navigations are detected from resource timings
+        // instead — Next does not send its `?_rsc=` payload through this fetch.
+        var settle = function (ok) {
+          if (kind !== "action") return;
+          buf.push({ t: stamp(), kind: "action", url: url, ms: Math.round(performance.now() - t0), ok: ok });
+          updatePill();
+        };
+        // Never swallow a rejection — re-throw so the app behaves exactly as it would unwrapped.
+        return origFetch.apply(this, arguments).then(
+          function (res) { settle(!!res.ok); return res; },
+          function (err) { settle(false); throw err; }
+        );
+      };
+
+      // --- images, layout shifts, long tasks ---
+      // Each observer is wrapped individually: an entry type this browser does not support
+      // must cost us that one signal, not the whole mode.
+      var watch = function (type, handler) {
+        try {
+          var o = new PerformanceObserver(handler);
+          o.observe({ type: type, buffered: false });
+          obs.push(o);
+        } catch (e) {}
+      };
+      watch("resource", function (list) {
+        list.getEntries().forEach(function (e) {
+          // An RSC payload landing for the nav we are still holding resolves it immediately,
+          // rather than waiting out NAV_SETTLE_MS.
+          if (pendingNav && e.name.indexOf("_rsc=") > -1) {
+            var p = pendingNav;
+            if (findRscEntry([e], p.to, p.at, RSC_LOOKBACK_MS)) settleNav(p.rec, e);
+          }
+          if (!/\/api\/attachments\/|\/storage\/v1\/object\//.test(e.name)) return;
+          buf.push({
+            t: stamp(), kind: "img", url: e.name,
+            ms: Math.round(e.duration),
+            ttfbMs: Math.round(e.responseStart ? e.responseStart - e.startTime : 0),
+            transferSize: e.transferSize, decodedBodySize: e.decodedBodySize,
+            status: e.responseStatus != null ? e.responseStatus : null,
+          });
+        });
+        updatePill();
+      });
+      watch("layout-shift", function (list) {
+        list.getEntries().forEach(function (e) {
+          if (e.hadRecentInput || !(e.value > 0.01)) return;
+          buf.push({ t: stamp(), kind: "shift", value: Math.round(e.value * 1000) / 1000 });
+        });
+        updatePill();
+      });
+      watch("longtask", function (list) {
+        list.getEntries().forEach(function (e) { buf.push({ t: stamp(), kind: "longtask", ms: Math.round(e.duration) }); });
+        updatePill();
+      });
+
+      perfStop = function () {
+        obs.forEach(function (o) { try { o.disconnect(); } catch (e) {} });
+        window.fetch = origFetch;
+        history.pushState = origPush; history.replaceState = origReplace;
+        window.removeEventListener("popstate", onPop);
+        clearTimeout(navTimer);
+      };
+      console.log("[annotate] measure mode ON — recording navigations, actions, images, shifts, long tasks");
     }
-    function toggle() { window.__annotator.mode = window.__annotator.mode === "on" ? "off" : "on"; var on = window.__annotator.mode === "on"; document.documentElement.classList.toggle("__ann-cross", on); if (!on) { hideHighlight(); hideInspector(); } updatePill(); }
+
+    function stopMeasuring() { if (perfStop) { perfStop(); perfStop = null; } }
+
+    function updatePill() {
+      var m = window.__annotator.mode, c = window.__annotations.length;
+      if (m === "measure") {
+        pill.textContent = "◉ Measure: REC" + (perfBuf && perfBuf.size() ? " · " + perfBuf.size() : "");
+        pill.style.background = pal.accent; pill.style.color = pal.accentFg;
+      } else if (m === "on") {
+        pill.textContent = "● Annotate: ON" + (c ? " · " + c : "");
+        pill.style.background = pal.accent; pill.style.color = pal.accentFg;
+      } else {
+        pill.textContent = "○ Annotate: OFF" + (c ? " · " + c : "");
+        pill.style.background = pal.surface2; pill.style.color = pal.text2;
+      }
+    }
+    // off -> annotate -> measure -> off. The crosshair cursor, the hover highlight and the
+    // inspector card belong to ANNOTATE mode only; measure mode must leave the page alone.
+    function toggle() {
+      var m = window.__annotator.mode;
+      var next = m === "off" ? "on" : m === "on" ? "measure" : "off";
+      window.__annotator.mode = next;
+      document.documentElement.classList.toggle("__ann-cross", next === "on");
+      if (next !== "on") { hideHighlight(); hideInspector(); }
+      if (next === "measure") startMeasuring(); else stopMeasuring();
+      updatePill();
+    }
 
     function btn(label, primary) { var b = document.createElement("button"); b.textContent = label; Object.assign(b.style, { background: primary ? pal.accent : pal.hover, color: primary ? pal.accentFg : pal.text, border: primary ? "none" : "1px solid " + pal.border, borderRadius: "6px", padding: "5px 10px", font: "600 12px " + SANS, cursor: "pointer" }); return b; }
-    var box = null, target = null;
+    var box = null, target = null, pendingImage = null;
     function openComment(el, x, y) {
       closeComment(); target = el;
       box = document.createElement("div"); box.className = "__ann-ui";
@@ -191,14 +456,72 @@
       Object.assign(ta.style, { width: "100%", height: "66px", resize: "none", background: pal.surface, color: pal.text, border: "1px solid " + pal.border, borderRadius: "6px", padding: "6px", font: "12px " + SANS, boxSizing: "border-box", outline: "none" });
       ta.addEventListener("focus", function () { ta.style.borderColor = pal.accent; });
       ta.addEventListener("blur", function () { ta.style.borderColor = pal.border; });
-      var row = document.createElement("div"); Object.assign(row.style, { display: "flex", gap: "6px", marginTop: "6px", justifyContent: "flex-end" });
+
+      // ---- image attachment: ⌘V into the box, or drop a file on it ----
+      // Deliberately NOT an <input type="file">: this browser is Playwright-driven, and
+      // Chrome hands the file chooser to the automation client instead of showing the OS
+      // dialog — Matt would see nothing and every pending chooser blocks the agent's next
+      // tool call. Paste and drag-and-drop both bypass the chooser entirely.
+      var thumbWrap = document.createElement("div");
+      Object.assign(thumbWrap.style, { display: "none", position: "relative", marginTop: "6px" });
+      var thumb = document.createElement("img");
+      Object.assign(thumb.style, { display: "block", width: "100%", borderRadius: "6px", border: "1px solid " + pal.border });
+      var dropImg = document.createElement("button"); dropImg.textContent = "✕"; dropImg.type = "button";
+      dropImg.setAttribute("aria-label", "Remove attached image");
+      Object.assign(dropImg.style, { position: "absolute", top: "4px", right: "4px", width: "18px", height: "18px", borderRadius: "999px", border: "1px solid " + pal.border, background: pal.elevated, color: pal.text2, font: "600 10px/1 " + SANS, cursor: "pointer" });
+      dropImg.onclick = function () { setImage(null); };
+      thumbWrap.append(thumb, dropImg);
+
+      var IDLE_HINT = "⌘V or drop an image";
+      function setImage(dataUrl) {
+        pendingImage = dataUrl;
+        thumb.src = dataUrl || "";
+        thumbWrap.style.display = dataUrl ? "block" : "none";
+        hint.textContent = dataUrl ? "image attached" : IDLE_HINT;
+      }
+      function attach(file) {
+        hint.textContent = "reading image…";
+        toDataUrl(file).then(function (d) { setImage(d); if (!d) hint.textContent = "not an image"; });
+      }
+
+      // Drag a file straight from Finder onto the comment box.
+      box.addEventListener("dragover", function (e) {
+        e.preventDefault(); e.stopPropagation();
+        box.style.borderColor = pal.accent; hint.textContent = "drop to attach";
+      });
+      box.addEventListener("dragleave", function (e) {
+        if (box.contains(e.relatedTarget)) return;          // moving between children isn't a leave
+        box.style.borderColor = pal.border; if (!pendingImage) hint.textContent = IDLE_HINT;
+      });
+      box.addEventListener("drop", function (e) {
+        e.preventDefault(); e.stopPropagation();
+        box.style.borderColor = pal.border;
+        var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+        if (f) attach(f); else if (!pendingImage) hint.textContent = IDLE_HINT;
+      });
+
+      // Clipboard paste — the whole point: Cmd+Shift+Ctrl+4 then ⌘V, no file ever hits disk.
+      ta.addEventListener("paste", function (e) {
+        var items = (e.clipboardData && e.clipboardData.items) || [];
+        for (var i = 0; i < items.length; i++) {
+          if (items[i].kind === "file" && /^image\//.test(items[i].type)) {
+            e.preventDefault(); attach(items[i].getAsFile()); return;
+          }
+        }
+      });
+
+      var row = document.createElement("div"); Object.assign(row.style, { display: "flex", alignItems: "center", gap: "6px", marginTop: "6px" });
+      var hint = document.createElement("span");
+      Object.assign(hint.style, { flex: "1", font: "10px " + SANS, color: pal.text3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" });
+      hint.textContent = IDLE_HINT;
       var cancel = btn("Cancel", false), saveBtn = btn("Save", true);
-      var submit = function () { var v = ta.value.trim(); if (v) record(target, v); closeComment(); };
+      var submit = function () { var v = ta.value.trim(); if (v) record(target, v, pendingImage); closeComment(); };
       cancel.onclick = closeComment; saveBtn.onclick = submit;
       ta.addEventListener("keydown", function (e) { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); submit(); } });
-      row.append(cancel, saveBtn); box.append(ta, row); document.body.appendChild(box); ta.focus();
+      row.append(hint, cancel, saveBtn);
+      box.append(ta, thumbWrap, row); document.body.appendChild(box); ta.focus();
     }
-    function closeComment() { if (box) { box.remove(); box = null; target = null; } }
+    function closeComment() { if (box) { box.remove(); box = null; target = null; pendingImage = null; } }
 
     // Comment-pin marker: rounded bubble with one pointed corner (bottom-left) aimed at
     // the element, wrapping an accent chip with the number — like a map/comment pin.
@@ -211,9 +534,11 @@
       pin.appendChild(inner); document.body.appendChild(pin);
     }
 
-    function record(el, comment) {
+    function record(el, comment, image) {
       seq += 1;
-      var a = { id: "a" + seq, n: seq, selector: buildSelector(el), descriptor: describe(el), comment: comment, url: location.pathname + location.search, ts: new Date().toISOString(), status: "new" };
+      var a = { id: "a" + seq, n: seq, selector: buildSelector(el), descriptor: describe(el), comment: comment, url: location.pathname + location.search, ts: new Date().toISOString(), status: "new", hasImage: !!image };
+      // The image never rides along in the annotation — the agent pulls it by id.
+      if (image) putImage(a.id, image);
       window.__annotations.push(a); persist(); addBadge(el, seq); updatePill();
       if (waiter) { var w = waiter; waiter = null; clearTimeout(w.timer); w.resolve(); }  // wake the long-poll
     }
@@ -249,6 +574,13 @@
 
     // ---- long-poll API for the skill's watch loop ----
     window.__annotatorDrain = function () { var f = window.__annotations.filter(function (a) { return a.status === "new"; }); f.forEach(function (a) { a.status = "seen"; }); persist(); return f; };
+    // Mirrors __annotatorDrain for perf entries. Returns [] if measure mode never ran.
+    window.__annotatorPerfTake = function () {
+      if (!perfBuf) return [];
+      var out = perfBuf.drain(Math.round(performance.now()));
+      updatePill();
+      return out;
+    };
     window.__annotatorWait = function (timeoutMs) {
       return new Promise(function (resolve) {
         if (window.__annotations.some(function (a) { return a.status === "new"; })) return resolve(window.__annotatorDrain());
@@ -274,11 +606,23 @@
     // The skill's watch loop re-runs this via (0,eval) when window.__annotator is missing,
     // so a page refresh never needs the full overlay re-pasted. buildSelector is prepended
     // because __setupAnnotator closes over it. ponytail: eval of our own source, dev-only.
-    try { localStorage.setItem("__ann_boot", buildSelector.toString() + "\n(" + __setupAnnotator.toString() + ")();"); } catch (e) {}
+    // Every function __setupAnnotator closes over must be prepended here, or the
+    // post-reload re-boot dies on a ReferenceError.
+    try {
+      localStorage.setItem("__ann_boot",
+        buildSelector.toString() + "\n" + fitDimensions.toString() + "\n" +
+        classifyRequest.toString() + "\n" + createPerfBuffer.toString() + "\n" +
+        findRscEntry.toString() + "\n" +
+        "(" + __setupAnnotator.toString() + ")();");
+    } catch (e) {}
 
     updatePill();
-    console.log("[annotate] overlay ready — Alt+A toggle · hover = inspect · Shift = click-through · ? = shortcuts");
+    console.log("[annotate] overlay ready — Alt+A toggle · hover = inspect · Shift = click-through · ⌘V attaches an image · ? = shortcuts");
   }
 
-  return { buildSelector: buildSelector, __setupAnnotator: __setupAnnotator };
+  return {
+    buildSelector: buildSelector, fitDimensions: fitDimensions,
+    classifyRequest: classifyRequest, createPerfBuffer: createPerfBuffer, findRscEntry: findRscEntry,
+    __setupAnnotator: __setupAnnotator,
+  };
 });
