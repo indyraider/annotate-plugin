@@ -69,3 +69,33 @@ on stripe (now light), linear (still dark), example.com (unchanged).
 **Worth noting how it was found:** every unit test passed, both browser gates passed, and the
 bug was plainly visible the moment a screenshot was opened. Add a look-at-it step to any
 future phase that touches the chrome.
+
+## The boot path, actually verified (decision 3, partially)
+
+Matt chose "retire serve.cjs, one method". Before deleting the only working boot path I read
+how `browser_run_code_unsafe` actually executes its snippet — and the method SKILL.md
+documented **would not have worked.**
+
+That tool runs the code in `vm.createContext({ page, __end__ })`: a bare sandbox whose only
+host object is `page`. No `require`, no `fs`, no dynamic `import`. Tested inside a faithful
+reproduction of that sandbox, four approaches fail:
+
+| approach | result |
+|---|---|
+| `await import("node:fs/promises")` — what SKILL.md said | "a dynamic import callback was not specified" |
+| `require("fs")` | "require is not defined" |
+| `page.addScriptTag({ path })` | CSP: "Executing inline script violates…" |
+| same + CDP `Page.setBypassCSP` | same — the bypass does not apply to an already-loaded document |
+
+**What works:** `page.context().addInitScript({ path })` for each module, then `page.reload()`.
+`addInitScript` takes a path, so Playwright reads the files in its own process, and injects
+them over CDP before the document's own scripts — the same mechanism as `evaluate`, which
+Chromium does not subject to page CSP. Verified `ready:true` on github.com (`default-src
+'none'`), stripe.com, linear.app and localhost.
+
+**Two costs Matt did not have when he decided**, so serve.cjs is NOT deleted yet:
+1. It requires a **page reload** — anything typed or opened on the page is lost.
+2. `browser_run_code_unsafe` is RCE-equivalent and may prompt for permission every boot.
+
+serve.cjs still boots the local app with neither cost. That is a genuine trade-off rather than
+the clean one-way-street the decision was made on, so it goes back to him.

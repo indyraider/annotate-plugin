@@ -218,22 +218,34 @@ if you need a real answer for that element.
     From a local origin (`http://localhost:3000`) the same fetch returns 200 — which is why
     this never showed up against the dev app.
 
-  **The escape hatch, verified working:** skip the fetch. Read `overlay/*.js` from disk in the
-  Playwright process and evaluate each in order — no network request, so there is nothing left
-  to block. Costs no context tokens either, same as the server.
+  **The escape hatch, verified working 2026-08-07:** skip the network entirely.
+  `browser_run_code_unsafe` runs your snippet in a **bare `vm` sandbox whose only host object
+  is `page`** — no `require`, no `fs`, no dynamic `import`. Anything file-shaped must therefore
+  go through `page` itself, and `addInitScript` takes a **path**, so Playwright reads the files
+  in its own process and injects them over CDP before the document's own scripts — the same
+  mechanism as `browser_evaluate`, which Chromium does not subject to page CSP.
   ```
   browser_run_code_unsafe({ code: `async (page) => {
-    const fs = await import("node:fs/promises");
-    const dir = "<this skill's directory>/overlay";
-    for (const f of ["core.js","palette.js","ui.js","point.js","measure.js","study-motion.js","study.js","index.js"])
-      await page.evaluate(await fs.readFile(dir + "/" + f, "utf8"));
+    const FILES = ["core.js","palette.js","ui.js","point.js","measure.js","study-motion.js","study.js","index.js"];
+    for (const f of FILES) await page.context().addInitScript({ path: "<this skill's directory>/overlay/" + f });
+    await page.reload({ waitUntil: "domcontentloaded" });
     return await page.evaluate(() => { window.__annotatorMods.index.setup(); return "ready"; });
   }` })
   ```
-  Use this whenever the target is a public site; Setup's `__annotatorBoot` path is fine for
-  the local app. **Not yet exercised through the MCP tool itself** — the boot was verified in
-  a directly-driven Chromium, so if `browser_run_code_unsafe` is unavailable or refused, say
-  so rather than falling back silently to a path that cannot work.
+  Confirmed booting on `github.com` (`default-src 'none'`), `stripe.com` and `linear.app`,
+  run inside a reproduction of that exact sandbox. **Four other approaches were tried and all
+  fail** — recorded so nobody spends the afternoon again: `await import("node:fs/promises")`
+  ("a dynamic import callback was not specified"), `require("fs")` ("require is not defined"),
+  and `page.addScriptTag({ path })` **both with and without** a CDP `Page.setBypassCSP`
+  ("Executing inline script violates the following Content Security Policy directive"). The
+  CSP bypass does not rescue `addScriptTag`, because the policy belongs to the document that
+  has already loaded.
+
+  **Two real costs.** It needs a **page reload**, so anything typed or opened on that page is
+  lost — boot before the user starts, never mid-session. And `browser_run_code_unsafe` is
+  RCE-equivalent, so the harness may prompt for permission each time. In exchange,
+  `addInitScript` persists for the browser context, so every later navigation re-injects the
+  modules by itself and the watch loop's self-heal only has to call `index.setup()` again.
 - **To study a button or link, hold Alt and click it** (fixed 2026-08-07). A plain click in
   Study mode pins the element *and* lets the page navigate, because studying a site means
   moving through it — making the page inert was a Phase 1a bug and must not come back.
