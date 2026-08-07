@@ -10,3 +10,4 @@ Task 2: minor (deferred): no DOM-driven test of pin -> favourite -> re-pin -> ta
 Task 2: minor (deferred, pre-existing): ui.js has no 'does not mutate the page' assertion of its own, unlike study.js.
 
 === PAUSED AFTER TASK 2 OF 5 — controller checkpointed with the user. Remaining: T3 file format + neutral seed template, T4 promote procedure in SKILL.md, T5 end-to-end browser verification against a REAL PUBLIC SITE (not localhost), then final whole-branch review. ===
+Task 3: complete. templates/design-language.md (stack-neutral seed), SKILL.md "Favourites — the study library" (entry point, two-document rule, file format + markdown rationale, seeding). 5 break/restore proofs all fired: Tideswell token injected, section renamed, one "Not yet decided" removed, template unlinked from SKILL.md, template deleted. No subagent review dispatched (session ran solo per user instruction) — final whole-branch review should cover it.

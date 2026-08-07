@@ -205,6 +205,82 @@ if you need a real answer for that element.
   assumed.** An older GSAP version without them yields a tween count with less per-tween
   detail — report that honestly as "less detail available," not as "no animation found."
 
+## Favourites — the study library
+
+Study answers "what is this?". A **favourite** is Matt saying "I want this." It saves the
+pinned element's readout, his note and tags, and the URL it came from, into a
+`design-studies/` directory **in his own project** — files he owns, not a tool-owned store.
+
+**Driving it:** with an element pinned in Study mode, Matt types a note and tags in the
+Study panel and hits Save; or you pull it yourself:
+```
+async () => await window.__annotatorStudyFavourite()
+```
+**It returns a Promise — `await` it** (same reason as `__annotatorStudyTake()`: the motion
+tiers fill in asynchronously). It resolves `null` if nothing is pinned. Otherwise:
+```
+{ element, motion, note, tags, url, ts }
+```
+`url` is captured from `location.href` inside the overlay and **cannot be passed in or
+overridden**. Six months on, a decision whose source nobody can find is not a decision.
+
+**The two-document rule.** Favourites are **staging**, not the design language. Forty
+admired cards from forty sites, appended together, is a mood board with three radius scales
+and no ease — the opposite of a system. Favourites may contradict each other freely; they
+only become a design language by going through the promote step, one decision at a time.
+**Never write a favourite into Matt's design document directly.**
+
+### The file on disk
+
+One markdown file per study, screenshot beside it, in `design-studies/`:
+
+```markdown
+# Pricing card — layered shadow
+
+**From:** https://example.com/pricing
+**Saved:** 2026-08-07
+**Tags:** card, elevated, dark
+
+![](./pricing-card-layered-shadow.png)
+
+## Element
+| property | value |
+|---|---|
+| radius | 20px |
+| shadow | 0 8px 30px rgb(0 0 0 / .12) |
+| padding | 24px 28px |
+
+## Tailwind
+`rounded-2xl border border-white/10 px-7 py-6 ...`
+
+## Motion
+**tier 1** — transition: transform 180ms cubic-bezier(.2,.8,.2,1)
+**tier 2** — gsap: y 60→0, opacity 0→1, 0.8s power3.out
+
+## Notes
+<Matt's note, verbatim>
+```
+
+- **Title** is the short name Matt gave it; if he gave none, generate one from the tag and
+  the element (`Pricing card — layered shadow`). The filename is that title slugified, and
+  the screenshot uses the **same slug** so the pair stays obvious in a directory listing.
+- **`From:` and `Saved:` are mandatory.** Never write a favourite file without both.
+- **Only include the tiers that actually fired**, worded as the Study section requires — a
+  tier-3 inference written as a tier-1 fact is a lie that survives in a file.
+- Omit a section entirely rather than writing an empty one.
+
+**Markdown, not JSON, and this is deliberate:** Matt can read it, correct it by hand, and
+diff it in git; it survives this tool being uninstalled; and no index only the tool can read
+holds his decisions hostage. The cost is that nothing machine-queries it — pay it.
+
+### Seeding a design language
+
+If his project has no design document, `templates/design-language.md` next to this file is a
+neutral seed — sections and prompts only, every one marked **Not yet decided**, with no
+framework, stack or colour values assumed. Copy it in. **Tell him you created it** — do not
+silently add a file to his repo. `overlay.test.cjs` asserts the template stays stack-neutral;
+portability is a product constraint, not a style preference.
+
 ## Watch loop
 
 Repeat until Matt says done (or the browser closes / evaluate errors):

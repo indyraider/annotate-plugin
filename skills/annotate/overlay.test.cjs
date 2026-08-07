@@ -815,6 +815,39 @@ assert.ok(/onFavouriteSave/.test(indexSrc), "index.js registers the favourite-sa
 assert.ok(/studyMode\.favourite\(/.test(indexSrc), "index.js's favourite-save handler calls studyMode.favourite()");
 assert.ok(!/studyMode\.favourite/.test(uiSrc), "ui.js never calls studyMode directly");
 
+// ---- Task 3: the seed design-language template ----------------------------
+
+// The template is shipped into OTHER people's projects. Portability is a
+// product constraint: anything specific to the project this tool grew up in
+// (Tideswell) leaking into the seed would hand a stranger our tokens as if
+// they were their own decisions.
+const templateSrc = fs.readFileSync(path.join(__dirname, "templates", "design-language.md"), "utf8");
+
+[/--surface-/, /--coral/, /glass-edge/, /Tailwaters/i, /Tideswell/i].forEach(function (pattern) {
+  assert.ok(!pattern.test(templateSrc), "seed template is stack-neutral: contains no " + pattern.source);
+});
+
+// The no-Tideswell-tokens check above is satisfied by an EMPTY file, so it
+// only means something alongside proof the template is actually the document
+// it claims to be. Both halves have to hold.
+["Principles", "Colour", "Spacing & grid", "Typography", "Radii", "Shadows", "Motion", "Components"].forEach(function (section) {
+  assert.ok(templateSrc.indexOf("## " + section) !== -1, "seed template has a '" + section + "' section");
+});
+
+// Every section carries the explicit not-yet-decided marker — a blank section
+// and a section nobody has got to yet are indistinguishable without it, and
+// the whole point of the seed is that an unfilled slot reads as unfilled.
+assert.ok((templateSrc.match(/\*\*Not yet decided\.\*\*/g) || []).length >= 8,
+  "seed template marks every section 'Not yet decided'");
+
+// The template is only reachable through SKILL.md — an unreferenced file in a
+// skill directory is a file an executing agent never finds.
+const skillSrc = fs.readFileSync(path.join(__dirname, "SKILL.md"), "utf8");
+assert.ok(skillSrc.indexOf("templates/design-language.md") !== -1,
+  "SKILL.md points at the seed template by path");
+assert.ok(/__annotatorStudyFavourite/.test(skillSrc),
+  "SKILL.md documents the favourite entry point");
+
 Promise.all([
   favPromise.then(function (v) {
     assert.strictEqual(v, null, "takeFavourite() resolves null (not undefined, not rejected) when nothing is pinned");
