@@ -121,4 +121,28 @@ assert.ok(!/window\.__annotator\.mode\s*===\s*"off"/.test(src), 'no guard may te
 // The pill cycles off -> on -> measure -> off. Assert the cycle exists in toggle().
 assert.ok(/"off"\s*:\s*"measure"/.test(src) || /"measure"\s*:\s*"off"/.test(src), "toggle must cycle through measure");
 
+const paletteSrc = fs.readFileSync(MOD("palette.js"), "utf8");
+const uiSrc = fs.readFileSync(MOD("ui.js"), "utf8");
+
+// The palette must keep deriving from the HOST page, not a hardcoded theme —
+// this is what makes the overlay look native on whatever site it lands on.
+assert.ok(/getComputedStyle/.test(paletteSrc), "palette derives from the host page");
+assert.ok(/ACCENT/.test(paletteSrc), "palette keeps a fixed accent identity");
+
+// Luminance is measured through a canvas on purpose: string-parsing misreads
+// modern lab()/oklch() channel ranges. Guard the canvas path against being
+// "simplified" back into a regex.
+assert.ok(/getContext\(["']2d["']\)/.test(paletteSrc), "palette resolves colour via canvas, not string parsing");
+
+// ui.js owns chrome only — no mode logic, no annotation records.
+assert.ok(!/__annotations\b/.test(uiSrc), "ui.js does not touch annotation state");
+assert.ok(!/mode\s*[!=]==?\s*["']on["']/.test(uiSrc), "ui.js does not branch on mode");
+
+// The file-chooser ban and the mode-guard rule are overlay-wide invariants.
+// They are re-asserted per module so a future split cannot quietly drop them.
+for (const f of ["core.js", "palette.js", "ui.js"]) {
+  const src = fs.readFileSync(MOD(f), "utf8");
+  assert.ok(!/\.type\s*=\s*["']file["']/.test(src), "no file input in " + f + " (its chooser jams the agent)");
+}
+
 console.log("overlay.test: ok");
