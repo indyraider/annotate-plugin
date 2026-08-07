@@ -261,13 +261,34 @@
     return value === token ? 0 : Infinity;
   }
 
+  // Pure: the span of a numeric scale (max - min, ignoring any non-numeric
+  // tokens). Used below as the fallback denominator when the nearest token
+  // is 0 and dividing by the token itself would be meaningless.
+  function scaleRange(scale) {
+    var min = null, max = null;
+    for (var i = 0; i < scale.length; i++) {
+      var n = Number(scale[i]);
+      if (isNaN(n)) continue;
+      if (min === null || n < min) min = n;
+      if (max === null || n > max) max = n;
+    }
+    return min === null ? 0 : max - min;
+  }
+
   // Pure: the scale token nearest a studied value, and how far away it is.
+  // Tie-break on equal distance is the smaller numeric token, not "whichever
+  // came first in the array" — array order is not part of a design language,
+  // so the same value against the same scale must classify the same way no
+  // matter how the caller happened to order it.
   function nearestInScale(value, scale) {
     if (!scale || !scale.length) return null;
     var best = null;
     for (var i = 0; i < scale.length; i++) {
       var d = tokenDistance(value, scale[i]);
-      if (best === null || d < best.distance) best = { value: scale[i], distance: d };
+      if (best === null || d < best.distance ||
+          (d === best.distance && Number(scale[i]) < Number(best.value))) {
+        best = { value: scale[i], distance: d };
+      }
     }
     return best;
   }
@@ -292,7 +313,14 @@
     // there is nothing to measure "close" against, so it can only be new.
     if (!nearest || nearest.distance === Infinity) return { verdict: "new", nearest: nearest, suggestion: null };
     var base = Math.abs(Number(nearest.value));
-    var ratio = base > 0 ? nearest.distance / base : Infinity;
+    // A token of 0 breaks distance/base: ANY nonzero distance divided by 0 is
+    // Infinity, so a value sitting right next to a 0 token always read as
+    // "new" — the unsafe direction, since the whole point of this classifier
+    // is that borderline cases must lean "conflict". Fall back to the scale's
+    // own spread instead: the same 4px that's noise against a 0..999 range is
+    // a real jump against a 0..8 range.
+    var ratio = base > 0 ? nearest.distance / base
+      : (function () { var range = scaleRange(scale); return range > 0 ? nearest.distance / range : Infinity; })();
     if (ratio > threshold) return { verdict: "new", nearest: nearest, suggestion: null };
     return {
       verdict: "conflict",
@@ -316,7 +344,15 @@
     for (var key in study) {
       if (!Object.prototype.hasOwnProperty.call(study, key)) continue;
       var values = study[key];
-      if (!values) continue;
+      // A scalar (a bare number, e.g. opacity: 0.5) has no .length, so the
+      // loop below would silently iterate zero times and the value would
+      // vanish with no error — exactly the "silently lost user decision" this
+      // function exists to prevent. Wrap it as one-element rather than drop
+      // it. A bare STRING also has .length, so without Array.isArray it would
+      // iterate character-by-character and shred "abc" into three fake tokens
+      // — Array.isArray is what keeps a string a single value.
+      if (values == null) continue;
+      if (!Array.isArray(values)) values = [values];
       var scale = language[key] || [];
       for (var i = 0; i < values.length; i++) {
         var value = values[i];

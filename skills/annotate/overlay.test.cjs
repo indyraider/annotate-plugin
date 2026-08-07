@@ -708,4 +708,34 @@ assert.ok(r.adopt.length >= 1, "the shadow is new — the language has none");
 var total = r.fits.length + r.adopt.length + r.conflicts.length;
 assert.strictEqual(total, 4, "every studied value lands in exactly one bucket, got " + total);
 
+// ---- Fix wave: zero-token ratio + non-array reconcile values -------------
+// Caught in review: nearestInScale's first-seen tie-break made the SAME value
+// against the SAME scale (just reordered) classify differently, and
+// classifyValue's distance/base ratio went to Infinity whenever the nearest
+// token was 0 — always "new", the unsafe direction the whole asymmetry rule
+// exists to avoid.
+
+assert.deepStrictEqual(core.nearestInScale(2, [0, 4]), core.nearestInScale(2, [4, 0]),
+  "nearest is order-independent (ties break on the smaller token, not array position)");
+
+assert.strictEqual(
+  core.classifyValue(2, [0, 4, 8, 16, 24]).verdict,
+  core.classifyValue(2, [4, 8, 16, 24, 0]).verdict,
+  "classifyValue verdict is order-independent even when the nearest token is 0"
+);
+
+assert.strictEqual(core.classifyValue(0.01, [0, 10]).verdict, "conflict",
+  "a value essentially AT 0 must not read as 'new' just because dividing by a 0 token blows up the ratio");
+
+// reconcile: a scalar (non-array) study value must not silently vanish.
+var scalarResult = core.reconcile({ opacity: 0.5 }, {});
+var scalarTotal = scalarResult.fits.length + scalarResult.adopt.length + scalarResult.conflicts.length;
+assert.strictEqual(scalarTotal, 1, "a scalar study value lands in exactly one bucket, not dropped");
+
+// reconcile: a bare string must be treated as ONE token, not shredded into one
+// entry per character (a string has .length too, which is what caused this).
+var stringResult = core.reconcile({ shadowLabel: "abc" }, {});
+var stringTotal = stringResult.fits.length + stringResult.adopt.length + stringResult.conflicts.length;
+assert.strictEqual(stringTotal, 1, "a bare string study value is ONE token, not one entry per character");
+
 console.log("overlay.test: ok");
