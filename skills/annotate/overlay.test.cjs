@@ -1,6 +1,7 @@
 // Self-check for the one piece of tricky logic in overlay.js: buildSelector.
-// Pure helpers now live in overlay/core.js and are required directly; overlay.js's
-// own source is still read (never executed here) for the DOM-touching checks below.
+// Pure helpers now live in overlay/core.js and are required directly; overlay.js
+// itself is now just the loader (Task 6) — its source is still read (never
+// executed here) for the file-input regression guard and the loader's own checks.
 // Run: node .claude/skills/annotate/overlay.test.cjs
 const fs = require("node:fs");
 const assert = require("node:assert");
@@ -46,18 +47,10 @@ assert.deepStrictEqual(fitDimensions(900, 600, 1600), { w: 900, h: 600 }, "never
 assert.deepStrictEqual(fitDimensions(0, 100, 1600), { w: 0, h: 0 }, "degenerate size -> zero, no NaN canvas");
 assert.deepStrictEqual(fitDimensions(4000, 1, 1600), { w: 1600, h: 1 }, "a sliver keeps at least 1px");
 
-// The reload bootstrap must carry every helper __setupAnnotator closes over, or the
-// post-refresh re-boot dies on a ReferenceError. Assert on the SOURCE, since building
-// the real cache entry needs a browser.
 // Regression guard: an <input type="file"> must never come back. This browser is
 // Playwright-driven — Chrome routes the chooser to the automation client, so Matt sees
 // no dialog AND every queued chooser blocks the agent's next tool call. Paste + drop only.
 assert.ok(!/\.type\s*=\s*["']file["']/.test(src), "no file input (its chooser jams the agent)");
-
-const boot = src.slice(src.indexOf('localStorage.setItem("__ann_boot"'));
-for (const fn of ["buildSelector.toString()", "fitDimensions.toString()", "classifyRequest.toString()", "createPerfBuffer.toString()", "findRscEntry.toString()", "__setupAnnotator.toString()"]) {
-  assert.ok(boot.includes(fn), `boot cache must include ${fn}`);
-}
 
 // classifyRequest: which kind of Next.js request is this? Next tags Server Actions with
 // `Next-Action` and RSC navigation payloads with `RSC`. Everything else is ignored.
@@ -109,17 +102,6 @@ assert.strictEqual(findRscEntry([{ name: "http://x/chat/c/OTHER?_rsc=h", startTi
 assert.strictEqual(findRscEntry([{ name: "http://x/chat/c/abc?_rsc=h", startTime: 100, duration: 50 }], "http://x/chat/c/abc", 1000, 200), null, "an _rsc older than the lookback window is ignored");
 assert.strictEqual(findRscEntry([rscHit], "http://x/chat/c/abc?m=123", 1000, 1200), rscHit, "query string on the destination is ignored when matching");
 assert.strictEqual(findRscEntry(null, "http://x/chat/c/abc", 1000, 1200), null, "no entry list -> null, never throws");
-
-// Measure mode must never block clicks. Every click-swallowing guard tests `!== "on"`,
-// which is precisely what lets a third mode pass interaction through untouched. If someone
-// later rewrites one as `=== "off"`, measure mode silently starts eating clicks — so assert
-// on the source. Four guards: pointerdown/mousedown, blockNav, auxclick, hover inspector.
-const guards = src.match(/window\.__annotator\.mode\s*!==\s*"on"/g) || [];
-assert.ok(guards.length >= 4, `expected >=4 '!== "on"' guards, found ${guards.length}`);
-assert.ok(!/window\.__annotator\.mode\s*===\s*"off"/.test(src), 'no guard may test === "off" (would swallow clicks in measure mode)');
-
-// The pill cycles off -> on -> measure -> off. Assert the cycle exists in toggle().
-assert.ok(/"off"\s*:\s*"measure"/.test(src) || /"measure"\s*:\s*"off"/.test(src), "toggle must cycle through measure");
 
 const paletteSrc = fs.readFileSync(MOD("palette.js"), "utf8");
 const uiSrc = fs.readFileSync(MOD("ui.js"), "utf8");
@@ -221,12 +203,30 @@ assert.ok(/25000/.test(indexSrc), "index.js keeps the 25s long-poll ceiling");
 // The idempotent re-inject guard.
 assert.ok(/if\s*\(\s*window\.__annotator\s*\)\s*return/.test(indexSrc), "index.js keeps the re-inject guard");
 
-// The mode cycle must remain off -> on -> measure -> off.
-assert.ok(/"measure"/.test(indexSrc), "index.js knows the measure mode");
+// The mode cycle must remain off -> on -> measure -> off. Guarded on the source since
+// a third mode silently rewritten as "off" -> "measure" would drop straight back to off.
+assert.ok(/"off"\s*:\s*"measure"/.test(indexSrc) || /"measure"\s*:\s*"off"/.test(indexSrc), "toggle must cycle through measure");
 
 // Smoke-require index.js, mirroring the other five modules — a broken
 // relative path or a missing export fails here, not on first injection.
 const indexMod = require(MOD("index.js"));
 assert.strictEqual(typeof indexMod.setup, "function", "index exports setup");
+
+const loaderSrc = fs.readFileSync(path.join(__dirname, "overlay.js"), "utf8");
+
+// The old bootstrap concatenated Function.prototype.toString() of every
+// closed-over helper, maintained by hand. It must be gone, not merely edited —
+// a six-module split makes that list impossible to keep correct.
+assert.ok(!/__ann_boot["']\s*,\s*\w+\.toString\(\)/.test(loaderSrc), "hand-concatenated bootstrap is gone");
+assert.ok(/__ann_boot_url/.test(loaderSrc), "loader stores a re-fetch URL instead");
+
+// Load order is a real dependency chain: core -> palette -> ui -> modes -> index.
+const order = ["core.js", "palette.js", "ui.js", "point.js", "measure.js", "index.js"];
+let at = -1;
+for (const f of order) {
+  const i = loaderSrc.indexOf(f);
+  assert.ok(i > at, "loader lists " + f + " in dependency order");
+  at = i;
+}
 
 console.log("overlay.test: ok");
