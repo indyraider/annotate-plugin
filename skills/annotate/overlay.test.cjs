@@ -1,13 +1,29 @@
 // Self-check for the one piece of tricky logic in overlay.js: buildSelector.
-// Loads the file with a fake `module` so the UMD tail exports (never auto-runs
-// setup, so no window/document needed). Run: node .claude/skills/annotate/overlay.test.cjs
+// Pure helpers now live in overlay/core.js and are required directly; overlay.js's
+// own source is still read (never executed here) for the DOM-touching checks below.
+// Run: node .claude/skills/annotate/overlay.test.cjs
 const fs = require("node:fs");
 const assert = require("node:assert");
 
 const src = fs.readFileSync(__dirname + "/overlay.js", "utf8");
-const mod = { exports: {} };
-new Function("module", src)(mod); // takes the CJS branch → mod.exports = api
-const { buildSelector, fitDimensions } = mod.exports;
+
+// Modules are loaded individually so a break is attributed to one file.
+const path = require("node:path");
+const MOD = function (name) { return path.join(__dirname, "overlay", name); };
+const core = require(MOD("core.js"));
+
+assert.strictEqual(typeof core.buildSelector, "function", "core exports buildSelector");
+assert.strictEqual(typeof core.fitDimensions, "function", "core exports fitDimensions");
+assert.strictEqual(typeof core.classifyRequest, "function", "core exports classifyRequest");
+assert.strictEqual(typeof core.createPerfBuffer, "function", "core exports createPerfBuffer");
+assert.strictEqual(typeof core.findRscEntry, "function", "core exports findRscEntry");
+
+// core must be DOM-free: it is required in Node with no browser globals present.
+// If it touches window/document at load time this require would already have thrown.
+const coreSrc = fs.readFileSync(MOD("core.js"), "utf8");
+assert.ok(!/getComputedStyle|document\.createElement/.test(coreSrc), "core.js stays DOM-free");
+
+const { buildSelector, fitDimensions } = core;
 
 // Fake DOM nodes: just what buildSelector reads.
 function el(tag, id) { return { nodeType: 1, tagName: tag.toUpperCase(), id: id || "", parentElement: null, children: [] }; }
@@ -45,7 +61,7 @@ for (const fn of ["buildSelector.toString()", "fitDimensions.toString()", "class
 
 // classifyRequest: which kind of Next.js request is this? Next tags Server Actions with
 // `Next-Action` and RSC navigation payloads with `RSC`. Everything else is ignored.
-const { classifyRequest, createPerfBuffer } = mod.exports;
+const { classifyRequest, createPerfBuffer } = core;
 
 assert.strictEqual(classifyRequest({ "Next-Action": "abc" }), "action", "Next-Action -> action");
 assert.strictEqual(classifyRequest({ RSC: "1" }), "rsc", "RSC alone -> rsc");
@@ -82,7 +98,7 @@ assert.deepStrictEqual(buf2.drain(100), [], "dropped counter resets after a drai
 // route them through the patched window.fetch — and it starts the request BEFORE pushState, so
 // a forward-looking timer misses it entirely and every nav reads as a cache hit. Detection
 // therefore reads the browser's own resource timings and looks BACKWARD from the URL change.
-const { findRscEntry } = mod.exports;
+const { findRscEntry } = core;
 const P = "/chat/c/abc";
 const rscHit = { name: "http://x/chat/c/abc?_rsc=h4sh", startTime: 900, duration: 145 };
 
