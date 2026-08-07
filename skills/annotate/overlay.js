@@ -1,7 +1,9 @@
 // Annotate overlay — loader. The implementation lives in overlay/*.js and is
 // fetched from the local server (see serve.cjs) rather than pasted through the
-// agent's context. Node still requires this file for the self-check, where it
-// re-exports core so existing callers keep working.
+// agent's context. Nothing in this repo require()s this file — overlay.test.cjs
+// reads it as TEXT, same as the browser does when it's injected. The UMD wrap
+// below only matters if something ever does require() it: it would get back
+// { boot, FILES }, not a re-export of core.js.
 ;(function (root, factory) {
   var api = factory();
   if (typeof module !== "undefined" && module.exports) module.exports = api;

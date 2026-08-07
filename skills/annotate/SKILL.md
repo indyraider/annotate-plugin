@@ -6,17 +6,33 @@ description: Point-and-comment on the live local app. Invoked as /annotate [url]
 # /annotate — point-and-comment on the live app
 
 Matt marks up the running app visually; the comments flow back here to be fixed.
-This skill is the loop **you** run. The overlay lives in `overlay.js` next to this file.
+This skill is the loop **you** run. `overlay.js` next to this file is a small loader;
+the real implementation lives in `overlay/*.js` and is served locally by `serve.cjs`
+rather than pasted into your context.
 
 ## Setup
 
 1. **URL**: use the `[url]` arg, else `http://localhost:3000`. Assume the dev server
    is already up (Matt keeps `:3000` running — never kill it). If it's not, ask.
-2. **Open the page**: `browser_navigate` to the URL (reuse the existing browser).
-3. **Inject the overlay**: read `overlay.js` from this skill's directory and pass its
-   full contents as the body of `browser_evaluate`'s `function`, i.e.
-   `() => { <contents of overlay.js> }`. It's idempotent (guards on `window.__annotator`).
-4. **Tell Matt**, briefly: a pill is bottom-right, **starts OFF** (browse freely).
+2. **Start the overlay server** (skip if one from earlier in this session is still
+   up): `node ${CLAUDE_PLUGIN_ROOT}/skills/annotate/serve.cjs`. It prints one line of
+   JSON — `{"url":"http://127.0.0.1:PORT/","port":PORT,"root":"..."}` — read that and
+   keep the `url`. It binds to `127.0.0.1` only, never anything beyond your machine.
+3. **Open the page**: `browser_navigate` to the URL (reuse the existing browser).
+4. **Boot the overlay**: read `overlay.js` from this skill's directory — it's now a
+   ~37-line loader, not the implementation — and `browser_evaluate` it, then call
+   `__annotatorBoot` with the server URL from step 2:
+   ```
+   async () => { <contents of overlay.js>
+     return await window.__annotatorBoot("<server url from step 2>");
+   }
+   ```
+   The loader fetches the six implementation modules (`core.js`, `palette.js`, `ui.js`,
+   `point.js`, `measure.js`, `index.js`) from that server and evals each in order — this
+   is what replaces pasting the old 628-line single-file implementation into
+   `browser_evaluate` on every run (~24k tokens each time). Idempotent: if the overlay
+   is already running, `__annotatorBoot` resolves `"already-running"` and touches nothing.
+5. **Tell Matt**, briefly: a pill is bottom-right, **starts OFF** (browse freely).
    Flip it **ON** (click the pill or press **Alt+A**) to comment; press again for
    **measure** mode (records timings, clicks pass straight through — see below); again to
    return to off. In annotate mode, hover highlights the
@@ -68,16 +84,25 @@ Repeat until Matt says done (or the browser closes / evaluate errors):
 1. **Long-poll (self-healing)** for comments — one `browser_evaluate`:
    ```
    async () => {
-     if (!window.__annotator) { var s = localStorage.getItem("__ann_boot"); if (s) (0, eval)(s); }
+     if (!window.__annotator) {
+       <contents of overlay.js>
+       await window.__annotatorBoot(localStorage.getItem("__ann_boot_url"));
+     }
      if (!window.__annotator) return { needReinject: true };
      const anns = await window.__annotatorWait(25000);
      return { anns, perf: window.__annotatorPerfTake ? window.__annotatorPerfTake() : [] };
    }
    ```
-   On first setup the overlay caches a self-contained bootstrap in `localStorage`, so a page
-   reload re-boots the overlay here for free — no re-pasting `overlay.js`. Playwright awaits
-   the promise; it returns the new annotations (the moment Matt saves one, or `[]` after ~25s).
-   Only if `{ needReinject: true }` comes back (cache somehow gone) do a full re-inject (Setup step 3).
+   A page reload wipes all page JS state, including `__annotatorBoot` itself — so the
+   self-heal has to re-embed the loader (the same ~37 lines from Setup step 4, not the
+   whole implementation) *before* it can call it. `__annotatorBoot` then re-fetches the
+   six modules from the server you started in Setup step 2 (still running — it's a plain
+   Node process, not tied to the page) and re-boots against the URL the overlay saved to
+   `localStorage["__ann_boot_url"]` on first boot, restoring every annotation and its
+   status from the same storage. Playwright awaits the promise; it returns the new
+   annotations (the moment Matt saves one, or `[]` after ~25s). Only if
+   `{ needReinject: true }` comes back (server not reachable, or the URL was never saved)
+   do a full re-inject from scratch (Setup steps 2–4).
 3. **For each annotation in `anns`** `{ id, n, selector, descriptor, comment, url, hasImage }`:
    - **If `hasImage`, pull Matt's attachment FIRST** — it's the most direct statement of
      what he means. **Never return the image through the poll or a plain evaluate**: a
@@ -126,9 +151,11 @@ Repeat until Matt says done (or the browser closes / evaluate errors):
   on page elements so a click can't navigate (links/buttons are inert until you flip OFF) —
   that's what lets you click a hyperlink to comment on it without being taken to its target.
   **Hold Shift** to bypass this for one interaction (peek/click-through).
-- **Reload-proof**: on setup the overlay writes a self-contained bootstrap to
-  `localStorage["__ann_boot"]`; the watch-loop poll re-`eval`s it after a reload. Editing a
-  component the current page uses often triggers an HMR reload — the self-heal handles it.
+- **Reload-proof**: on setup the overlay writes the server URL (not any source) to
+  `localStorage["__ann_boot_url"]`; the watch-loop poll re-embeds the loader and calls
+  `__annotatorBoot` with that URL after a reload. Editing a component the current page
+  uses often triggers an HMR reload — the self-heal handles it, as long as the server
+  from Setup step 2 is still running.
 - **Hover inspector**: while ON, hovering shows a computed-style card (tag, size, font,
   weight, color, bg, padding, margin) so Matt has DevTools-level context while commenting.
 - **Attached images** are downscaled to 1600px on the longest side and stored as JPEG
@@ -146,4 +173,9 @@ Repeat until Matt says done (or the browser closes / evaluate errors):
   with no paths). Clipboard paste and drag-and-drop both avoid the chooser. `overlay.test.cjs`
   asserts this. Same trap fires if Matt clicks an upload control in the *app* while you're
   driving — if a call dies on modal state, cancel the choosers and carry on.
-- Never edit the Tideswell app to support this tool; all behavior lives in `overlay.js`.
+- Never edit the Tideswell app to support this tool; all behavior lives in `overlay.js`
+  and the modules it loads from `overlay/`.
+- **This plugin repo is the only edit surface.** `.claude/skills/annotate/` inside a
+  consuming project is a copy, is gitignored there, and must never be edited — the
+  copy drifted for two days once, silently missing an entire feature. To refresh a
+  consumer, re-install the plugin.

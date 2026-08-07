@@ -67,8 +67,18 @@ Say **"done"** when you're finished and Claude stops watching.
 
 ## How it works
 
-The skill (`skills/annotate/SKILL.md`) tells Claude to open your app in the Playwright browser and
-inject `overlay.js`. The overlay captures your comments into the page; Claude reads them back via a
+The skill (`skills/annotate/SKILL.md`) starts a small local static server
+(`skills/annotate/serve.cjs`) that serves the overlay's implementation modules
+(`skills/annotate/overlay/*.js`), then tells Claude to open your app in the Playwright
+browser, evaluate a ~37-line loader (`overlay.js`), and point it at that server. The
+loader fetches the six modules and boots the overlay. This exists to cut per-run context
+cost: the old single-file overlay was 628 lines pasted directly into `browser_evaluate`
+on every run (~24k tokens); serving it means only the tiny loader is ever pasted, and a
+page reload re-fetches from the same server instead of re-injecting anything. The server
+binds to `127.0.0.1` only — it's a dev-loopback convenience, never reachable off your
+machine, and never proxies to anything outside the plugin's own files.
+
+The overlay captures your comments into the page; Claude reads them back via a
 promise-based long-poll (`window.__annotatorWait`), so it feels live. Each comment carries a robust
 element descriptor (text, classes, `data-*`, a CSS path, and React dev source info when present) that
 Claude greps to the right file. Nothing is stored server-side — comments live for the session only.
