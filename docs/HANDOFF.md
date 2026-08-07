@@ -88,9 +88,9 @@ Phase 1b is complete and merged. **The next build is not yet planned** — Compa
    felt right at that scale. On a coarse scale where 4px is genuinely noise it will nag. Taste,
    not reasoning.
 2. **A link cannot be favourited.** See below — needs a design decision, not an improvisation.
-3. **Does `serve.cjs` retire?** Disk injection (below) works everywhere, localhost included, so
-   the local server no longer has a job. One boot path instead of two, but it unwinds a chunk
-   of Phase 0.
+3. ~~Does `serve.cjs` retire?~~ **DECIDED 2026-08-07: retired.** `serve.cjs`, `serve.test.cjs`
+   and the `overlay.js` loader are deleted. One boot path: `addInitScript` from disk. It costs
+   a page reload and an RCE-equivalent tool call, both accepted knowingly.
 
 ---
 
@@ -182,5 +182,5 @@ sabotaging the subject left the suite green because another code path reached th
 Self-checks (dependency-free, manual, never framework-wired):
 ```
 node skills/annotate/overlay.test.cjs
-node skills/annotate/serve.test.cjs
 ```
+(`serve.test.cjs` went with `serve.cjs` on 2026-08-07 — there is one self-check now.)

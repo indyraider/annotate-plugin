@@ -101,22 +101,23 @@ Say **"done"** when you're finished and Claude stops watching.
 
 ## How it works
 
-The skill (`skills/annotate/SKILL.md`) starts a small local static server
-(`skills/annotate/serve.cjs`) that serves the overlay's implementation modules
-(`skills/annotate/overlay/*.js`), then tells Claude to open your app in the Playwright
-browser, evaluate a ~37-line loader (`overlay.js`), and point it at that server. The
-loader fetches the eight modules (`core.js`, `palette.js`, `ui.js`, `point.js`,
-`measure.js`, `study-motion.js`, `study.js`, `index.js`) and boots the overlay. This exists
-to cut per-run context cost: the old single-file overlay was 628 lines pasted directly into
-`browser_evaluate` on every run (~24k tokens); serving it means only the tiny loader is ever
-pasted, and a page reload re-embeds that tiny loader and re-fetches the modules from the same
-server — a reload wipes all page JS, including the loader itself, so the self-heal has to
-re-inject it before it can call back into the server. The server
-binds to `127.0.0.1` only — it's a dev-loopback convenience, never reachable off your
-machine, and never proxies to anything outside the plugin's own files. (This fetch-and-eval
-boot path is itself subject to the target page's Content-Security-Policy — see Study's CSP
-note above — because it needs both `connect-src` to allow `127.0.0.1` and `script-src` to
-allow `'unsafe-eval'`.)
+The skill (`skills/annotate/SKILL.md`) tells Claude to open your app in the Playwright
+browser and inject the overlay's eight modules (`skills/annotate/overlay/*.js`) straight from
+disk, using Playwright's own `addInitScript`. Playwright reads the files in its own process
+and injects them ahead of the page's own scripts, so nothing is fetched over the network and
+nothing is pasted through Claude's context — the old single-file overlay was 628 lines
+evaluated on every run, about 24k tokens each time.
+
+This replaced a small local static server (`serve.cjs`) plus a loader that fetched from it,
+both **retired 2026-08-07**. The server worked fine against `localhost` and failed on every
+public site, for a reason that took a while to pin down: not Content-Security-Policy, as was
+assumed and written down for weeks, but Chrome's Local Network Access rule, which denies a
+public origin permission to reach `127.0.0.1` at all. Injecting from disk makes no request, so
+there is nothing left to refuse. It costs one page reload at boot.
+
+Because `addInitScript` registers on the browser *context*, the modules come back by
+themselves after any reload or navigation — the reload self-heal is just calling `setup()`
+again.
 
 The overlay captures your comments into the page; Claude reads them back via a
 promise-based long-poll (`window.__annotatorWait`), so it feels live. Each comment carries a robust

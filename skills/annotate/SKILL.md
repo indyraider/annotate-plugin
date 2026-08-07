@@ -6,9 +6,9 @@ description: Point-and-comment on the live local app, plus a read-only Study mod
 # /annotate — point-and-comment on the live app
 
 Matt marks up the running app visually; the comments flow back here to be fixed.
-This skill is the loop **you** run. `overlay.js` next to this file is a small loader;
-the real implementation lives in `overlay/*.js` and is served locally by `serve.cjs`
-rather than pasted into your context.
+This skill is the loop **you** run. The implementation is the eight modules in `overlay/`,
+injected into the page from disk by the Playwright process — so nothing is pasted through
+your context and nothing is fetched over the network.
 
 ## Setup
 
@@ -17,38 +17,40 @@ rather than pasted into your context.
    `[url]` arg is a remote address** (e.g. `/annotate https://someothersite.com`), there is
    no local dev server to wait for — that's a normal invocation, most often heading for
    Study mode (see below), which is built to work against any site, not just the local app.
-2. **Start the overlay server** (skip if one from earlier in this session is still up —
-   reuse it, don't start a second one). `serve.cjs` never exits on its own (it just
-   `listen()`s), so it **must be run in the background**, not as a normal foreground Bash
-   call — a foreground call blocks forever on the very first step. If your harness has a
-   background/async flag on its shell tool, use that. Otherwise, run `serve.cjs` from
-   **this skill's directory** (same convention as step 4 — no path is hardcoded, no env var
-   bet). Do not pass `--port`: it defaults to an ephemeral port, so nothing left running
-   from an earlier session can ever collide with it.
-   ```bash
-   node <this skill's directory>/serve.cjs > /tmp/annotate-serve.log 2>&1 &
-   sleep 1
-   cat /tmp/annotate-serve.log   # -> {"url":"http://127.0.0.1:PORT/","port":PORT,"root":"..."}
+2. **Open the page**: `browser_navigate` to the URL (reuse the existing browser).
+3. **Boot the overlay** — one call, no server, no pasted source:
    ```
-   Read that JSON and keep the `url`. It binds to `127.0.0.1` only, never anything beyond
-   your machine. **If the log isn't that single JSON line, the server did not start** — read
-   the error (missing `node`, wrong working directory, etc.), fix it, and do not proceed with
-   a guessed URL.
-3. **Open the page**: `browser_navigate` to the URL (reuse the existing browser).
-4. **Boot the overlay**: read `overlay.js` from this skill's directory — it's now a
-   ~37-line loader, not the implementation — and `browser_evaluate` it, then call
-   `__annotatorBoot` with the server URL from step 2:
+   browser_run_code_unsafe({ code: `async (page) => {
+     const FILES = ["core.js","palette.js","ui.js","point.js","measure.js","study-motion.js","study.js","index.js"];
+     for (const f of FILES) await page.context().addInitScript({ path: "<this skill's directory>/overlay/" + f });
+     await page.reload({ waitUntil: "domcontentloaded" });
+     return await page.evaluate(() => { window.__annotatorMods.index.setup(); return "ready"; });
+   }` })
    ```
-   async () => { <contents of overlay.js>
-     return await window.__annotatorBoot("<server url from step 2>");
-   }
-   ```
-   The loader fetches the eight implementation modules (`core.js`, `palette.js`, `ui.js`,
-   `point.js`, `measure.js`, `study-motion.js`, `study.js`, `index.js`) from that server
-   and evals each in order — this
-   is what replaces pasting the old 628-line single-file implementation into
-   `browser_evaluate` on every run (~24k tokens each time). Idempotent: if the overlay
-   is already running, `__annotatorBoot` resolves `"already-running"` and touches nothing.
+   `addInitScript` takes a **path**, so Playwright reads the files in its own process and
+   injects them over CDP before the document's own scripts — the same mechanism as
+   `browser_evaluate`, which Chromium does not subject to page CSP. Verified booting on
+   `github.com` under `default-src 'none'`, and on `stripe.com`, `linear.app` and localhost.
+   Order matters: it is a dependency chain, and `overlay.test.cjs` asserts this list matches
+   `core.js`'s `OWN_MODULE_FILES` and the directory itself.
+
+   **What NOT to try** — all four fail, and are recorded so nobody loses an afternoon
+   rediscovering them. `browser_run_code_unsafe` runs the snippet in a bare `vm` sandbox whose
+   only host object is `page`: no `require` ("require is not defined"), no dynamic `import`
+   ("a dynamic import callback was not specified"), and `page.addScriptTag({ path })` is
+   refused by CSP **both with and without** a CDP `Page.setBypassCSP` — the bypass does not
+   apply to a document that has already loaded.
+
+   **Two costs.** It **reloads the page**, so boot before Matt starts rather than mid-session.
+   And `browser_run_code_unsafe` is RCE-equivalent, so the harness may prompt each time. In
+   exchange `addInitScript` persists for the browser context, so every later navigation
+   re-injects the modules on its own.
+
+   **If that tool is unavailable or refused**, the fallback is to read the eight files and
+   `browser_evaluate` each one's contents in order, then call `index.setup()`. It works
+   everywhere the first one does, but it costs ~24k tokens of your context per boot, which is
+   exactly what the retired server existed to avoid. Say you are doing it and why.
+4. *(nothing — the boot above is a single step)*
 5. **Tell Matt**, briefly: a toolbar sits **bottom-centre**, and it **starts with no mode
    selected** (browse freely). Top row never changes — **Point · Measure · Compare · Study**,
    then **Queue**; the second row shows whatever the selected mode needs and collapses when
@@ -496,43 +498,26 @@ Repeat until Matt says done (or the browser closes / evaluate errors):
 1. **Long-poll (self-healing)** for comments — one `browser_evaluate`:
    ```
    async () => {
-     if (!window.__annotator) {
-       const bootUrl = localStorage.getItem("__ann_boot_url");
-       if (!bootUrl) return { needReinject: true };
-       <contents of overlay.js>
-       await window.__annotatorBoot(bootUrl);
-     }
-     if (!window.__annotator) return { needReinject: true };
+     if (!window.__annotatorMods) return { needReboot: true };
+     if (!window.__annotator) window.__annotatorMods.index.setup();
      const anns = await window.__annotatorWait(25000);
      return { anns, perf: window.__annotatorPerfTake ? window.__annotatorPerfTake() : [] };
    }
    ```
-   A page reload wipes all page JS state, including `__annotatorBoot` itself — so the
-   self-heal has to re-embed the loader (the same ~37 lines from Setup step 4, not the
-   whole implementation) *before* it can call it. `__annotatorBoot` then re-fetches the
-   eight modules from the server you started in Setup step 2 (still running — it's a plain
-   Node process, not tied to the page) and re-boots against the URL the overlay saved to
-   `localStorage["__ann_boot_url"]` on first boot, restoring every annotation and its
-   status from the same storage. Playwright awaits the promise; it returns the new
-   annotations (the moment Matt saves one, or `[]` after ~25s).
+   A page reload wipes all page JS state — but `addInitScript` persists for the browser
+   context, so after any reload or navigation the eight modules are **already back**; only
+   `setup()` needs calling again. That is the whole self-heal, and it is why the boot in
+   Setup step 3 is a one-time cost rather than something the watch loop has to redo.
 
-   `{ needReinject: true }` and a **thrown/errored `browser_evaluate` call** are two
-   different signals — don't conflate them:
-   - **`{ needReinject: true }`** means only "no boot URL was ever saved" (fresh page,
-     nothing booted yet this session) — recover by running Setup steps 2–4 from scratch.
-   - **The `browser_evaluate` call itself erroring** (no return value at all) most often
-     means the page **navigated or reloaded while the 25s poll was open** — routine during
-     a long poll against an app Matt is actively editing (an HMR reload mid-evaluate kills
-     it with a navigation error while the server is perfectly healthy). **Re-run the same
-     poll first** — the reload self-heal (above) re-embeds the loader and picks up where it
-     left off. Only if it **errors again immediately** should you suspect the `fetch` inside
-     `__annotatorBoot` failed because the server from Setup step 2 is down or unreachable —
-     `boot()` has no `catch` (deliberately — no retry/error-handling logic is built into it),
-     so a dead server surfaces as a rejected promise / tool error, not as
-     `{ needReinject: true }`. Only then restart the server and re-run Setup steps 2–4.
-     Treating every errored evaluate as a dead server is the wrong call in the common case —
-     it burns a server restart on a reload that would have self-healed on its own, and if the
-     old server was still bound to a fixed port it would fail to restart at all.
+   `{ needReboot: true }` and a **thrown/errored `browser_evaluate` call** are different
+   signals — don't conflate them:
+   - **`{ needReboot: true }`** means the modules are not there at all: a different browser
+     context, or the boot never ran this session. Re-run Setup step 3.
+   - **The call itself erroring** (no return value) most often means the page **navigated or
+     reloaded while the 25s poll was open** — routine while Matt edits an app with HMR.
+     **Re-run the same poll first**; it will find the modules already re-injected and just
+     call `setup()`. Only if it errors again immediately should you re-run Setup step 3.
+
 2. **For each annotation in `anns`** `{ id, n, selector, descriptor, comment, url, hasImage }`:
    - **If `hasImage`, pull Matt's attachment FIRST** — it's the most direct statement of
      what he means. **Never return the image through the poll or a plain evaluate**: a
@@ -585,11 +570,10 @@ Repeat until Matt says done (or the browser closes / evaluate errors):
   on page elements so a click can't navigate (links/buttons are inert until you flip OFF) —
   that's what lets you click a hyperlink to comment on it without being taken to its target.
   **Hold Shift** to bypass this for one interaction (peek/click-through).
-- **Reload-proof**: on setup the overlay writes the server URL (not any source) to
-  `localStorage["__ann_boot_url"]`; the watch-loop poll re-embeds the loader and calls
-  `__annotatorBoot` with that URL after a reload. Editing a component the current page
-  uses often triggers an HMR reload — the self-heal handles it, as long as the server
-  from Setup step 2 is still running.
+- **Reload-proof, for free**: `addInitScript` is registered on the browser *context*, so the
+  eight modules are re-injected into every subsequent document automatically. After an HMR
+  reload the watch-loop poll only has to call `index.setup()` again. There is no server to
+  stay running and no URL to remember — both were retired 2026-08-07.
 - **Hover inspector**: while ON, hovering shows a computed-style card (tag, size, font,
   weight, color, bg, padding, margin) so Matt has DevTools-level context while commenting.
 - **Attached images** are downscaled to 1600px on the longest side and stored as JPEG
@@ -610,8 +594,7 @@ Repeat until Matt says done (or the browser closes / evaluate errors):
   with no paths). Clipboard paste and drag-and-drop both avoid the chooser. `overlay.test.cjs`
   asserts this. Same trap fires if Matt clicks an upload control in the *app* while you're
   driving — if a call dies on modal state, cancel the choosers and carry on.
-- Never edit the Tideswell app to support this tool; all behavior lives in `overlay.js`
-  and the modules it loads from `overlay/`.
+- Never edit the Tideswell app to support this tool; all behavior lives in `overlay/`.
 - **This plugin repo is the only edit surface.** `.claude/skills/annotate/` inside a
   consuming project is a copy, is gitignored there, and must never be edited — the
   copy drifted for two days once, silently missing an entire feature. To refresh a

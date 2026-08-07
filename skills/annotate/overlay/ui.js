@@ -276,7 +276,17 @@
     var favBtn = document.createElement("button"); favBtn.textContent = "★ Save favourite";
     favBtn.setAttribute("data-ann-act", "fav-save");
     Object.assign(favBtn.style, { padding: "6px 10px", borderRadius: "6px", border: "1px solid " + pal.border, background: pal.accent, color: pal.accentFg, font: "600 12px " + SANS, cursor: "pointer" });
-    favPanel.append(favNote, favTags, favBtn);
+    // Pressing ★ used to change nothing on screen whether it worked or not —
+    // reported live as "nothing happens when i click save favourite". A control
+    // whose entire output is invisible state is indistinguishable from a broken
+    // one, and the user is right to call it broken.
+    var favStatus = document.createElement("div");
+    Object.assign(favStatus.style, { color: pal.text3, font: "11px " + SANS, minHeight: "14px" });
+    function setFavouriteStatus(text, ok) {
+      favStatus.textContent = text || "";
+      favStatus.style.color = text ? (ok ? pal.text2 : pal.accent) : pal.text3;
+    }
+    favPanel.append(favNote, favTags, favBtn, favStatus);
     // NOT appended anywhere here — it is one of the things index.js can hand to
     // setModeTools(), and only index.js knows which mode wants it.
 
@@ -362,6 +372,8 @@
       setModeTools: setModeTools,
       toolsText: toolsText,
       favPanel: favPanel,
+      setFavouriteStatus: setFavouriteStatus,
+      clearFavouriteInputs: function () { favNote.value = ""; favTags.value = ""; },
       comparePanel: comparePanel,
       setCompareStatus: setCompareStatus,
       setCompareRows: setCompareRows,

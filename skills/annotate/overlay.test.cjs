@@ -6,7 +6,6 @@
 const fs = require("node:fs");
 const assert = require("node:assert");
 
-const src = fs.readFileSync(__dirname + "/overlay.js", "utf8");
 
 // Modules are loaded individually so a break is attributed to one file.
 const path = require("node:path");
@@ -50,7 +49,6 @@ assert.deepStrictEqual(fitDimensions(4000, 1, 1600), { w: 1600, h: 1 }, "a slive
 // Regression guard: an <input type="file"> must never come back. This browser is
 // Playwright-driven — Chrome routes the chooser to the automation client, so Matt sees
 // no dialog AND every queued chooser blocks the agent's next tool call. Paste + drop only.
-assert.ok(!/\.type\s*=\s*["']file["']/.test(src), "no file input (its chooser jams the agent)");
 
 // classifyRequest: which kind of Next.js request is this? Next tags Server Actions with
 // `Next-Action` and RSC navigation payloads with `RSC`. Everything else is ignored.
@@ -235,43 +233,43 @@ assert.ok(/core\.nextMode\(/.test(indexSrc), "index.js rotates via core.nextMode
 const indexMod = require(MOD("index.js"));
 assert.strictEqual(typeof indexMod.setup, "function", "index exports setup");
 
-const loaderSrc = fs.readFileSync(path.join(__dirname, "overlay.js"), "utf8");
-
-// The old bootstrap concatenated Function.prototype.toString() of every
-// closed-over helper, maintained by hand. It must be gone, not merely edited —
-// a six-module split makes that list impossible to keep correct.
-assert.ok(!/__ann_boot["']\s*,\s*\w+\.toString\(\)/.test(loaderSrc), "hand-concatenated bootstrap is gone");
-assert.ok(/__ann_boot_url/.test(loaderSrc), "loader stores a re-fetch URL instead");
-
-// Load order is a real dependency chain: core -> palette -> ui -> modes -> index.
-// study.js requires study-motion.js, and index.js requires everything (Task 6).
-const order = ["core.js", "palette.js", "ui.js", "point.js", "measure.js", "study-motion.js", "study.js", "index.js"];
-let at = -1;
-for (const f of order) {
-  const i = loaderSrc.indexOf(f);
-  assert.ok(i > at, "loader lists " + f + " in dependency order");
-  at = i;
-}
-
-// core.js's OWN_MODULE_FILES and the loader's FILES are two hand-maintained
-// lists that must name the same files — a ninth module added to one but not
-// the other silently reintroduces the isOwnModuleUrl self-match bug (Study
-// reporting its own new module as a detected motion/whatever library) for
-// exactly the file that was left out. Extract each array literal and check
-// membership rather than trusting them to stay in sync by convention.
+// ---- the module list, now that the loader is gone -------------------------
+//
+// serve.cjs and the overlay.js loader were retired 2026-08-07: the overlay is
+// injected from disk by the Playwright process (see SKILL.md), so there is no
+// server, no fetch, and no hand-maintained FILES array in a loader any more.
+//
+// That removed one of the two lists this suite used to cross-check, so the
+// remaining one is now checked against something that cannot drift: the
+// directory itself. A ninth module added to overlay/ and forgotten everywhere
+// else used to reintroduce the isOwnModuleUrl self-match bug silently — Study
+// reporting its own new module as a detected motion library. Now it fails here.
+const onDisk = fs.readdirSync(path.join(__dirname, "overlay")).filter(function (f) { return f.endsWith(".js"); }).sort();
 function extractStringArray(src, varName) {
   const m = new RegExp(varName + "\\s*=\\s*\\[([^\\]]*)\\]").exec(src);
   if (!m) return [];
   return (m[1].match(/["']([^"']+)["']/g) || []).map(function (s) { return s.slice(1, -1); });
 }
-const loaderFiles = extractStringArray(loaderSrc, "FILES");
 const ownModuleFiles = extractStringArray(coreSrc, "OWN_MODULE_FILES");
-assert.ok(loaderFiles.length > 0, "loader's FILES array is parseable");
 assert.ok(ownModuleFiles.length > 0, "core.js's OWN_MODULE_FILES array is parseable");
-for (const f of loaderFiles) {
-  assert.ok(ownModuleFiles.indexOf(f) !== -1,
-    "loader FILES entry '" + f + "' is missing from core.js's OWN_MODULE_FILES");
-}
+assert.deepStrictEqual(ownModuleFiles.slice().sort(), onDisk,
+  "OWN_MODULE_FILES names exactly the modules that exist on disk — no more, no fewer");
+
+// Load order is a real dependency chain: core -> palette -> ui -> modes -> index.
+// study.js requires study-motion.js, and index.js requires everything. The list
+// is consumed in order by the boot snippet, so its order is load-bearing.
+assert.deepStrictEqual(ownModuleFiles,
+  ["core.js", "palette.js", "ui.js", "point.js", "measure.js", "study-motion.js", "study.js", "index.js"],
+  "OWN_MODULE_FILES is in dependency order — it is what the boot snippet iterates");
+
+// SKILL.md carries the same list in its boot snippet, and prose drifts. An
+// agent following a stale list boots a partial overlay that fails on the first
+// missing dependency, which reads as "the tool is broken" rather than "the doc
+// is stale".
+const skillMdSrc = fs.readFileSync(path.join(__dirname, "SKILL.md"), "utf8");
+const skillFiles = extractStringArray(skillMdSrc, "FILES");
+assert.deepStrictEqual(skillFiles, ownModuleFiles,
+  "SKILL.md's boot snippet lists the same modules, in the same order, as core.js");
 
 // ---- Phase 1a: pure helpers behind Study ----------------------------------
 
@@ -647,14 +645,18 @@ assert.strictEqual(core.isMotionFingerprintUrl(null), false, "null url -> false,
 assert.ok(!/FINGERPRINT_RE/.test(studyMotionSrc), "the old unbounded FINGERPRINT_RE is gone from study-motion.js");
 assert.ok(/core\.isMotionFingerprintUrl/.test(studyMotionSrc), "study-motion.js's fingerprint scan calls core.isMotionFingerprintUrl");
 
-// IMPORTANT 2: the self-match bug returns whenever localStorage is unavailable.
-// Both the write (overlay.js's boot()) and the read (study-motion.js) swallow
-// their exceptions, and the read had no fallback — a sandboxed iframe or a
-// storage-blocked context left bootBase null, isOwnModuleUrl excluded nothing,
-// and Study reported its own study-motion.js as a detected motion library on
-// every such page.
-assert.ok(/window\.__annBootBase\s*=\s*base/.test(loaderSrc), "overlay.js's boot() also stashes the boot base in memory, next to the localStorage write");
-assert.ok(/window\.__annBootBase/.test(studyMotionSrc), "study-motion.js's fingerprint scan prefers the in-memory boot base over localStorage");
+// The self-match guard, after serve.cjs was retired. Nothing writes a boot base
+// any more — the modules are injected from disk and never appear in the page's
+// resource timings at all, so there is normally nothing for isOwnModuleUrl to
+// exclude and bootBase is legitimately null.
+//
+// The guard STAYS because the null path is the dangerous one and always was: a
+// null base excludes nothing, and Study then reports its own study-motion.js as
+// a detected motion library. That is still live for anyone loading the modules
+// as plain <script src> tags (the local preview harness does exactly this), and
+// core.isOwnModuleUrl is asserted directly above against a real base.
+assert.ok(/window\.__annBootBase/.test(studyMotionSrc), "study-motion.js's fingerprint scan still prefers an in-memory boot base when one exists");
+assert.ok(/bootBase = localStorage\.getItem/.test(studyMotionSrc), "and still falls back to localStorage rather than assuming one is set");
 
 // Minor 5: a cancelled tier-3 sample (superseded by a second concurrent
 // take()) must never be summarized as "no motion detected" — that is a
@@ -896,6 +898,52 @@ assert.strictEqual(core.classifyValue("0 1px 2px black", ["0 1px 2px black", "0 
 // with or without the guard and would prove nothing.
 assert.strictEqual(core.classifyValue("20rem", ["16px", "24px", "32px"]).verdict, "new",
   "rem against a px scale is not comparable — 'new', never a conflict fabricated out of a unit mismatch");
+
+// ---- "nothing happens when i click save favourite" (reported live) --------
+//
+// Two separate defects behind one report, and every unit test and every browser
+// gate was green through both of them.
+//
+// 1. The Study readout is up to 72vh tall and is placed relative to the cursor.
+//    Phase 2 moved the toolbar from the bottom-RIGHT corner to the bottom
+//    CENTRE — straight underneath it. Worse, the readout flips to
+//    pointerEvents:auto whenever the cursor is over it, so reaching for the ★
+//    button armed the very thing blocking it. The control was unreachable, and
+//    nothing anywhere reported an error.
+assert.ok(/function reservedTop\(\)/.test(studySrc), "study.js computes a floor from the toolbar's own position");
+assert.ok(/ui && ui\.bar && ui\.bar\.getBoundingClientRect\(\)/.test(studySrc), "and it measures the real toolbar rather than assuming a height");
+assert.ok(/panel\.style\.maxHeight = Math\.max\(120, floor - 16\)/.test(studySrc), "the readout SHRINKS to fit above the toolbar");
+// maxHeight must be applied before offsetHeight is read, or the clamp is
+// computed from the height the panel would have had if it were allowed to run
+// long — and it lands back on top of the toolbar.
+// COMMENTS STRIPPED FIRST. The first version of this compared raw indexes and
+// stayed green under sabotage, because the explanatory comment directly above
+// the code says the words "maxHeight" and "offsetHeight" in that order — so it
+// was measuring the comment, not the code. Same shape as the `/--/` assertion
+// that once matched a section banner.
+var showBody = extractFunction(studySrc, "show").split("\n")
+  .filter(function (l) { return l.trim().indexOf("//") !== 0; }).join("\n");
+assert.ok(showBody.indexOf("maxHeight") > -1, "show() clamps maxHeight at all");
+assert.ok(showBody.indexOf("offsetHeight") > -1, "show() reads offsetHeight at all");
+assert.ok(showBody.indexOf("maxHeight") < showBody.indexOf("offsetHeight"),
+  "maxHeight is set BEFORE offsetHeight is read, or the clamp uses a stale height");
+// Belt and braces: even if the clamp were ever wrong, the toolbar outranks the
+// readout in the stacking order, because the toolbar is the only way in.
+assert.ok(/zIndex: Z - 2/.test(studySrc), "the readout sits BELOW the toolbar in the stacking order");
+
+// 2. Pressing ★ changed nothing on screen whether it worked or not. A control
+//    whose entire output is invisible state is indistinguishable from a broken
+//    one, and the user was right to call it broken.
+assert.ok(/setFavouriteStatus\s*:/.test(uiSrc), "ui.js exposes a status line for the favourite panel");
+assert.ok(/Click an element on the page first/.test(indexSrc), "the no-op case says what to do instead of failing silently");
+assert.ok(/★ Saved/.test(indexSrc), "and a successful save is confirmed on screen");
+assert.ok(/var saved = studyMode\.favourite\(note, tags\);/.test(indexSrc), "index.js checks favourite()'s return value rather than discarding it");
+
+// A confirmation from the PREVIOUS element must not linger over a newly pinned
+// one — that is a quiet lie rather than a missing message.
+assert.ok(/if \(notify\) notify\(\)/.test(studySrc), "study.js notifies on pin change");
+assert.ok(/var pal = ctx\.pal, ui = ctx\.ui, notify = ctx\.notify;/.test(studySrc),
+  "notify is DECLARED — an undeclared bare name throws ReferenceError inside the click handler, which presents as 'clicking does nothing'");
 
 // ---- Phase 3: Compare — baseline vs re-run --------------------------------
 
