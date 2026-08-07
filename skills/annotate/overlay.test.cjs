@@ -229,4 +229,56 @@ for (const f of order) {
   at = i;
 }
 
+// ---- Phase 1a: pure helpers behind Study ----------------------------------
+
+// tallyValues: frequency order is what makes a palette readable — the colour
+// used 400 times is the brand colour, the one used twice is an accident.
+assert.deepStrictEqual(
+  core.tallyValues(["a", "b", "a", "c", "a", "b"]),
+  [{ value: "a", count: 3 }, { value: "b", count: 2 }, { value: "c", count: 1 }],
+  "tallyValues sorts by frequency, descending"
+);
+assert.deepStrictEqual(core.tallyValues([]), [], "tallyValues handles empty input");
+
+// detectScale: the single most useful fact about someone else's spacing is
+// whether it is on a grid at all.
+var s4 = core.detectScale([4, 8, 12, 16, 24, 32]);
+assert.strictEqual(s4.base, 4, "detectScale finds a 4px base");
+assert.strictEqual(s4.onGrid, true, "detectScale reports a clean 4px grid");
+
+var s8 = core.detectScale([8, 16, 24, 48]);
+assert.strictEqual(s8.base, 8, "detectScale finds an 8px base");
+
+// A scale with an off-grid value must NOT be reported as on-grid — claiming a
+// grid that isn't there is worse than reporting no grid.
+var messy = core.detectScale([4, 8, 13, 16]);
+assert.strictEqual(messy.onGrid, false, "one off-grid value breaks the grid claim");
+
+// base >= 2 guard: a GCD of 1 is not a grid, it is arithmetic.
+var noGrid = core.detectScale([3, 5, 7]);
+assert.strictEqual(noGrid.onGrid, false, "gcd of 1 is not a grid");
+
+assert.deepStrictEqual(core.detectScale([]), { base: 0, values: [], onGrid: false }, "detectScale handles empty");
+assert.strictEqual(core.detectScale([0, 0, 16]).base, 16, "detectScale ignores zeros");
+
+// toTailwind: exact utility where stock Tailwind has one, arbitrary value
+// otherwise. Getting this backwards produces classes that silently do nothing.
+var tw = core.toTailwind({ borderRadius: "16px", paddingTop: "24px", paddingRight: "24px",
+                           paddingBottom: "24px", paddingLeft: "24px", display: "flex",
+                           flexDirection: "column", gap: "12px" });
+assert.ok(tw.indexOf("rounded-2xl") !== -1, "16px radius -> rounded-2xl, got " + tw.join(" "));
+assert.ok(tw.indexOf("p-6") !== -1, "24px padding -> p-6, got " + tw.join(" "));
+assert.ok(tw.indexOf("flex") !== -1 && tw.indexOf("flex-col") !== -1, "flex column");
+assert.ok(tw.indexOf("gap-3") !== -1, "12px gap -> gap-3");
+
+var twArb = core.toTailwind({ borderRadius: "13px" });
+assert.ok(twArb.indexOf("rounded-[13px]") !== -1, "off-scale radius -> arbitrary value, got " + twArb.join(" "));
+
+// A default value must produce NO class — emitting `static` or `flex-row` for
+// every element buries the three classes that matter.
+assert.deepStrictEqual(core.toTailwind({ display: "block", position: "static" }), [], "defaults emit nothing");
+
+assert.strictEqual(typeof core.defaultsFor("div"), "object", "defaultsFor returns a table");
+assert.strictEqual(core.defaultsFor("div").display, "block", "div defaults to display:block");
+
 console.log("overlay.test: ok");

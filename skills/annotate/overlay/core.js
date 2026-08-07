@@ -89,9 +89,107 @@
     };
   }
 
+  // Pure: frequency-rank a list of values. A page's real palette is the handful
+  // of colours used hundreds of times; everything else is noise from one banner.
+  function tallyValues(values) {
+    if (!values || !values.length) return [];
+    var counts = {}, order = [];
+    for (var i = 0; i < values.length; i++) {
+      var v = values[i];
+      if (counts[v] === undefined) { counts[v] = 0; order.push(v); }
+      counts[v]++;
+    }
+    return order.map(function (v) { return { value: v, count: counts[v] }; })
+                .sort(function (a, b) { return b.count - a.count; });
+  }
+
+  // Pure: is this set of numbers built on a grid, and what is its unit?
+  // `base >= 2` because a GCD of 1 means "these are just numbers", not a system.
+  function detectScale(numbers) {
+    if (!numbers || !numbers.length) return { base: 0, values: [], onGrid: false };
+    var vals = [], seen = {};
+    for (var i = 0; i < numbers.length; i++) {
+      var n = Math.round(numbers[i]);
+      if (n > 0 && !seen[n]) { seen[n] = 1; vals.push(n); }
+    }
+    vals.sort(function (a, b) { return a - b; });
+    if (!vals.length) return { base: 0, values: [], onGrid: false };
+    var gcd = function (a, b) { while (b) { var t = b; b = a % b; a = t; } return a; };
+    var base = vals[0];
+    for (var j = 1; j < vals.length; j++) base = gcd(base, vals[j]);
+    var onGrid = base >= 2;
+    if (onGrid) {
+      for (var k = 0; k < vals.length; k++) { if (vals[k] % base !== 0) { onGrid = false; break; } }
+    }
+    return { base: base, values: vals, onGrid: onGrid };
+  }
+
+  // Pure: browser defaults worth suppressing. Not exhaustive by design — a
+  // readout listing `position: static` on every element hides the one that says
+  // `sticky`. Tag-specific entries override the shared block defaults.
+  var BLOCK_DEFAULTS = {
+    display: "block", position: "static", opacity: "1", zIndex: "auto",
+    borderRadius: "0px", boxShadow: "none", transform: "none", filter: "none",
+    backdropFilter: "none", letterSpacing: "normal", textTransform: "none",
+    backgroundImage: "none", flexDirection: "row", overflow: "visible"
+  };
+  var TAG_DEFAULTS = {
+    span: { display: "inline" }, a: { display: "inline" }, em: { display: "inline" },
+    strong: { display: "inline" }, img: { display: "inline" }, button: { display: "inline-block" }
+  };
+  function defaultsFor(tag) {
+    var out = {};
+    for (var k in BLOCK_DEFAULTS) if (Object.prototype.hasOwnProperty.call(BLOCK_DEFAULTS, k)) out[k] = BLOCK_DEFAULTS[k];
+    var t = TAG_DEFAULTS[String(tag).toLowerCase()];
+    if (t) for (var j in t) if (Object.prototype.hasOwnProperty.call(t, j)) out[j] = t[j];
+    return out;
+  }
+
+  // Pure: computed styles -> Tailwind classes. Stock utility where the value is
+  // on Tailwind's scale, arbitrary-value syntax otherwise. Users are on Tailwind;
+  // raw CSS costs them a hand conversion every time.
+  var TW_SPACE = { "0px": "0", "2px": "0.5", "4px": "1", "6px": "1.5", "8px": "2", "10px": "2.5",
+                   "12px": "3", "14px": "3.5", "16px": "4", "20px": "5", "24px": "6", "28px": "7",
+                   "32px": "8", "40px": "10", "48px": "12", "64px": "16", "80px": "20", "96px": "24" };
+  var TW_RADIUS = { "0px": "rounded-none", "2px": "rounded-sm", "4px": "rounded", "6px": "rounded-md",
+                    "8px": "rounded-lg", "12px": "rounded-xl", "16px": "rounded-2xl",
+                    "24px": "rounded-3xl", "9999px": "rounded-full", "999px": "rounded-full" };
+  function toTailwind(s) {
+    if (!s) return [];
+    var out = [], d = BLOCK_DEFAULTS;
+    var space = function (prefix, value) {
+      if (!value || value === "0px") return null;
+      return TW_SPACE[value] ? prefix + "-" + TW_SPACE[value] : prefix + "-[" + value + "]";
+    };
+    if (s.display && s.display !== d.display) {
+      if (s.display === "flex" || s.display === "grid" || s.display === "inline-flex") out.push(s.display);
+      else out.push("[display:" + s.display + "]");
+    }
+    if (s.flexDirection === "column") out.push("flex-col");
+    if (s.borderRadius && s.borderRadius !== d.borderRadius) {
+      out.push(TW_RADIUS[s.borderRadius] || "rounded-[" + s.borderRadius + "]");
+    }
+    // Uniform padding collapses to p-*; anything else stays per-side.
+    var pt = s.paddingTop, pr = s.paddingRight, pb = s.paddingBottom, pl = s.paddingLeft;
+    if (pt && pt === pr && pt === pb && pt === pl) { var p = space("p", pt); if (p) out.push(p); }
+    else {
+      if (pt && pb && pt === pb) { var py = space("py", pt); if (py) out.push(py); }
+      else { var a = space("pt", pt), b = space("pb", pb); if (a) out.push(a); if (b) out.push(b); }
+      if (pl && pr && pl === pr) { var px = space("px", pl); if (px) out.push(px); }
+      else { var c = space("pl", pl), e = space("pr", pr); if (c) out.push(c); if (e) out.push(e); }
+    }
+    if (s.gap) { var g = space("gap", s.gap); if (g) out.push(g); }
+    if (s.boxShadow && s.boxShadow !== d.boxShadow) out.push("shadow-[" + s.boxShadow.replace(/\s+/g, "_") + "]");
+    if (s.backdropFilter && s.backdropFilter !== d.backdropFilter) out.push("backdrop-blur-[" + s.backdropFilter + "]");
+    if (s.letterSpacing && s.letterSpacing !== d.letterSpacing) out.push("tracking-[" + s.letterSpacing + "]");
+    if (s.opacity && s.opacity !== d.opacity) out.push("opacity-[" + s.opacity + "]");
+    return out;
+  }
+
   return {
     buildSelector: buildSelector, fitDimensions: fitDimensions,
     classifyRequest: classifyRequest, createPerfBuffer: createPerfBuffer,
-    findRscEntry: findRscEntry,
+    findRscEntry: findRscEntry, tallyValues: tallyValues, detectScale: detectScale,
+    defaultsFor: defaultsFor, toTailwind: toTailwind,
   };
 });
