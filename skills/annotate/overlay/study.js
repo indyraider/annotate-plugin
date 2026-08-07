@@ -130,21 +130,37 @@
   // counting them would report the page's biggest "colour" as invisible.
   function isOpaqueColor(v) { return !!v && v !== "rgba(0, 0, 0, 0)" && v !== "transparent"; }
 
-  // :root's own custom properties — the author's own design tokens, named by the
-  // author, wherever declared (including inside @media/@supports/@layer, e.g. a
-  // dark-mode override). Same guard discipline as matchedRules/walkRules above:
-  // a cross-origin stylesheet throws on .cssRules, a malformed rule can throw on
-  // .style access — either must cost one rule, never the whole readout.
+  // Real dark/light token overrides rarely sit on a literal `:root` alone —
+  // `:root[data-theme="dark"]`, `.dark`, or `:root, .dark` are the common
+  // shapes, and the dark set is often the more interesting one to study. Split
+  // on commas: a compound selector list only needs one branch to qualify.
+  function isRootSelector(sel) {
+    if (!sel) return false;
+    var parts = sel.split(",");
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i].replace(/^\s+|\s+$/g, "");
+      if (p.indexOf(":root") === 0 || p === "html" || p.indexOf(".dark") !== -1 || p.indexOf("[data-theme") !== -1) return true;
+    }
+    return false;
+  }
+
+  // :root's own custom properties — the author's own design tokens — bucketed
+  // by the exact selector they were declared under so a themed override is
+  // never silently merged into the plain `:root` set. Same guard discipline as
+  // matchedRules/walkRules above: a cross-origin stylesheet throws on
+  // .cssRules, a malformed rule can throw on .style — either costs one rule,
+  // never the whole readout.
   function collectRootProps(rules, depth, out) {
     if (!rules || depth > 4) return;
     for (var i = 0; i < rules.length; i++) {
       var rule = rules[i];
-      if (rule.selectorText === ":root" || rule.selectorText === "html") {
+      if (isRootSelector(rule.selectorText)) {
         try {
           var style = rule.style;
+          var bucket = out[rule.selectorText] || (out[rule.selectorText] = {});
           for (var j = 0; j < style.length; j++) {
             var prop = style[j];
-            if (prop.indexOf("--") === 0) out[prop] = style.getPropertyValue(prop).trim();
+            if (prop.indexOf("--") === 0) bucket[prop] = style.getPropertyValue(prop).trim();
           }
         } catch (e) { /* one malformed rule, not the whole walk */ }
         continue;
@@ -167,7 +183,10 @@
     var inline = document.documentElement.style;
     for (var k = 0; k < inline.length; k++) {
       var prop = inline[k];
-      if (prop.indexOf("--") === 0) out[prop] = inline.getPropertyValue(prop).trim();
+      if (prop.indexOf("--") === 0) {
+        var bucket = out["(inline)"] || (out["(inline)"] = {});
+        bucket[prop] = inline.getPropertyValue(prop).trim();
+      }
     }
     return out;
   }
@@ -180,9 +199,17 @@
     var els = document.querySelectorAll("*");
     var n = Math.min(els.length, PAGE_CAP);
     var colors = [], sizes = [], weights = [], fonts = [], spacingNums = [], radii = [], shadows = [];
+    var scanned = 0;
 
     for (var i = 0; i < n; i++) {
-      var cs = getComputedStyle(els[i]);
+      var el = els[i];
+      // Study must be injected and active for the sweep to run at all, so every
+      // real invocation walks past our own chrome (highlight box, inspector
+      // card, this panel — all class __ann-ui) too. Left in, our own accent
+      // colour/radii/shadows would launder into "the site's" design system.
+      if (el.closest && el.closest(".__ann-ui")) continue;
+      scanned++;
+      var cs = getComputedStyle(el);
       if (isOpaqueColor(cs.color)) colors.push(cs.color);
       if (isOpaqueColor(cs.backgroundColor)) colors.push(cs.backgroundColor);
       if (cs.fontSize) sizes.push(cs.fontSize);
@@ -205,7 +232,7 @@
       radii: core.tallyValues(radii),
       shadows: core.tallyValues(shadows),
       customProps: readCustomProps(),
-      elementsScanned: n,
+      elementsScanned: scanned,
       truncated: els.length > PAGE_CAP
     };
   }

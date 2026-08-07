@@ -362,4 +362,20 @@ assert.ok(/detectScale/.test(studySrc), "page sweep runs grid detection");
 assert.ok(/tallyValues/.test(studySrc), "page sweep frequency-ranks values");
 assert.ok(/--/.test(studySrc) && /customProps|customProperties/.test(studySrc), "page sweep collects CSS custom properties");
 
+// The sweep must exclude the tool's OWN chrome (highlight box, inspector card,
+// this very panel — all carry class __ann-ui) from the site's reported design
+// system, or our accent colour/radii/shadows launder themselves in as the
+// site's own. Checked with createChrome excised first, so this can't pass by
+// picking up createChrome's own `panel.className = "__ann-ui"` assignment —
+// it must find the exclusion check somewhere ELSE, i.e. on the sweep path.
+assert.ok(/__ann-ui/.test(exciseFunction(studySrc, "createChrome")),
+  "page sweep excludes the tool's own chrome (__ann-ui) from the design system it reports");
+
+// :root matching must not be an exact-string match only — real sites declare
+// dark-mode token overrides on `:root[data-theme="dark"]` or `.dark`, and an
+// exact match would silently drop the dark set, which is often the more
+// interesting one to someone reverse-engineering the design.
+assert.ok(/data-theme/.test(studySrc) && /\.dark|dark/.test(studySrc),
+  "page sweep matches themed :root overrides (data-theme/.dark), not just exact :root/html");
+
 console.log("overlay.test: ok");
