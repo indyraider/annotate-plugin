@@ -20,7 +20,9 @@ Great for a fast "walk the app and mark everything that's off" review pass.
   second or two, maps it to the source file, and fixes it (in the order you left them).
 - **Hold Shift to click through** — operate the app normally (open a dropdown/modal) without
   leaving annotate mode, then keep commenting.
-- **Reload-proof** — survives page reloads (including HMR) without re-injecting.
+- **Reload-proof** — survives page reloads (including HMR) by re-embedding the tiny loader
+  and re-fetching from the same server; a reload wipes the page's JS entirely, so nothing
+  survives it un-reinjected.
 - **Adaptive UI** — reads your app's own background/text colors and themes itself to match, light
   or dark. It is not a hardcoded box; it blends into whatever app you drop it into.
 
@@ -74,7 +76,9 @@ browser, evaluate a ~37-line loader (`overlay.js`), and point it at that server.
 loader fetches the six modules and boots the overlay. This exists to cut per-run context
 cost: the old single-file overlay was 628 lines pasted directly into `browser_evaluate`
 on every run (~24k tokens); serving it means only the tiny loader is ever pasted, and a
-page reload re-fetches from the same server instead of re-injecting anything. The server
+page reload re-embeds that tiny loader and re-fetches the modules from the same server —
+a reload wipes all page JS, including the loader itself, so the self-heal has to re-inject
+it before it can call back into the server. The server
 binds to `127.0.0.1` only — it's a dev-loopback convenience, never reachable off your
 machine, and never proxies to anything outside the plugin's own files.
 

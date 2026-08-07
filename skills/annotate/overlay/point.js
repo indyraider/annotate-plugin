@@ -195,7 +195,7 @@
     function onMousemove(e) {
       if (state.mode !== "on") return;
       if (e.shiftKey || ui.isOurs(e.target)) { ui.hideHighlight(); ui.hideInspector(); return; }
-      if (box) { ui.hideInspector(); return; }          // don't cover the open comment box
+      if (box) { ui.showHighlight(e.target); ui.hideInspector(); return; }  // keep tracking, don't cover the open comment box
       ui.showHighlight(e.target);
       ui.showInspector(e.target, e.clientX, e.clientY);
     }

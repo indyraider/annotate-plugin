@@ -18,14 +18,19 @@ rather than pasted into your context.
    reuse it, don't start a second one). `serve.cjs` never exits on its own (it just
    `listen()`s), so it **must be run in the background**, not as a normal foreground Bash
    call — a foreground call blocks forever on the very first step. If your harness has a
-   background/async flag on its shell tool, use that. Otherwise:
+   background/async flag on its shell tool, use that. Otherwise, run `serve.cjs` from
+   **this skill's directory** (same convention as step 4 — no path is hardcoded, no env var
+   bet). Do not pass `--port`: it defaults to an ephemeral port, so nothing left running
+   from an earlier session can ever collide with it.
    ```bash
-   node ${CLAUDE_PLUGIN_ROOT}/skills/annotate/serve.cjs --port 7788 > /tmp/annotate-serve.log 2>&1 &
+   node <this skill's directory>/serve.cjs > /tmp/annotate-serve.log 2>&1 &
    sleep 1
-   cat /tmp/annotate-serve.log   # -> {"url":"http://127.0.0.1:7788/","port":7788,"root":"..."}
+   cat /tmp/annotate-serve.log   # -> {"url":"http://127.0.0.1:PORT/","port":PORT,"root":"..."}
    ```
    Read that JSON and keep the `url`. It binds to `127.0.0.1` only, never anything beyond
-   your machine.
+   your machine. **If the log isn't that single JSON line, the server did not start** — read
+   the error (missing `node`, wrong working directory, etc.), fix it, and do not proceed with
+   a guessed URL.
 3. **Open the page**: `browser_navigate` to the URL (reuse the existing browser).
 4. **Boot the overlay**: read `overlay.js` from this skill's directory — it's now a
    ~37-line loader, not the implementation — and `browser_evaluate` it, then call
@@ -116,14 +121,20 @@ Repeat until Matt says done (or the browser closes / evaluate errors):
    different signals — don't conflate them:
    - **`{ needReinject: true }`** means only "no boot URL was ever saved" (fresh page,
      nothing booted yet this session) — recover by running Setup steps 2–4 from scratch.
-   - **The `browser_evaluate` call itself erroring** (no return value at all) means the
-     `fetch` inside `__annotatorBoot` failed — the server from Setup step 2 is down or
-     unreachable. `boot()` has no `catch` (deliberately — no retry/error-handling logic
-     is built into it), so a dead server surfaces as a rejected promise / tool error, not
-     as `{ needReinject: true }`. Recovery is the same: restart the server and re-run
-     Setup steps 2–4 — don't sit there re-polling waiting for `needReinject` to appear,
-     it won't.
-3. **For each annotation in `anns`** `{ id, n, selector, descriptor, comment, url, hasImage }`:
+   - **The `browser_evaluate` call itself erroring** (no return value at all) most often
+     means the page **navigated or reloaded while the 25s poll was open** — routine during
+     a long poll against an app Matt is actively editing (an HMR reload mid-evaluate kills
+     it with a navigation error while the server is perfectly healthy). **Re-run the same
+     poll first** — the reload self-heal (above) re-embeds the loader and picks up where it
+     left off. Only if it **errors again immediately** should you suspect the `fetch` inside
+     `__annotatorBoot` failed because the server from Setup step 2 is down or unreachable —
+     `boot()` has no `catch` (deliberately — no retry/error-handling logic is built into it),
+     so a dead server surfaces as a rejected promise / tool error, not as
+     `{ needReinject: true }`. Only then restart the server and re-run Setup steps 2–4.
+     Treating every errored evaluate as a dead server is the wrong call in the common case —
+     it burns a server restart on a reload that would have self-healed on its own, and if the
+     old server was still bound to a fixed port it would fail to restart at all.
+2. **For each annotation in `anns`** `{ id, n, selector, descriptor, comment, url, hasImage }`:
    - **If `hasImage`, pull Matt's attachment FIRST** — it's the most direct statement of
      what he means. **Never return the image through the poll or a plain evaluate**: a
      screenshot is ~100k+ tokens of base64 and would swamp the context. Route it
@@ -158,13 +169,17 @@ Repeat until Matt says done (or the browser closes / evaluate errors):
    - **Fix or queue**: process in the order returned (Save order). If you're mid-fix when
      a batch arrives, finish the current one first, then the rest — tell Matt what you're
      on and what's queued.
-4. **If the batch was empty** (timeout) 4–5 times in a row (~2 min quiet), pause and ask
+3. **If the batch was empty** (timeout) 4–5 times in a row (~2 min quiet), pause and ask
    Matt if he's still going, rather than looping forever.
 
 ## Notes / ceilings
 
 - The overlay is **session-ephemeral** (mirrored to `localStorage` only). Nothing is
   stored server-side. This is the intended "quick tool" tradeoff.
+- **Toggling the mode off (pill or Alt+A) while a comment box is open discards the typed
+  text.** `disable()` closes the box on the way out; this is intentional, not a bug — the
+  box's own Escape handler only exists while the mode is enabled, so leaving the box open
+  across a mode switch would make it un-closable. Save or Cancel before toggling off.
 - Screenshots are **process-time**, not save-time — a purely transient state (hover-only
   tooltip, a dropdown that closed) may not re-show; the text comment carries those.
 - While mode is **ON**, the overlay swallows `pointerdown`/`mousedown`/`click`/`auxclick`
@@ -184,8 +199,11 @@ Repeat until Matt says done (or the browser closes / evaluate errors):
   would silently stop persisting every annotation. An in-memory map backs it up when the
   quota refuses. Ceiling: an image only survives a page reload if it fit in localStorage;
   the text comment always survives, so a lost attachment degrades, never blocks.
-- The overlay UI is styled with the app's own design tokens (`var(--surface-*)`,
-  `var(--text-*)`, `var(--coral)`, glass-edge) so it matches DESIGN-LANGUAGE.md and is theme-aware.
+- The overlay UI derives its own palette at runtime from the **host page's computed**
+  background and text colors (`getComputedStyle` + `color-mix`, see `overlay/palette.js`),
+  plus one fixed accent color — it does not read any app's design tokens or CSS variables.
+  That's what lets it look native on any site it's dropped into, light or dark, standalone
+  from whatever design system (if any) the host page uses.
 - **Never add an `<input type="file">` to the overlay.** This browser is Playwright-driven:
   Chrome hands the file chooser to the automation client instead of opening the OS dialog,
   so Matt sees nothing, and every queued chooser makes your next tool call fail with

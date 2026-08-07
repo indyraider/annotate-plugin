@@ -13,9 +13,16 @@
   var FILES = ["core.js", "palette.js", "ui.js", "point.js", "measure.js", "index.js"];
 
   // Fetch each module as TEXT and eval it, rather than importing it as a module.
-  // A strict site's CSP can block a cross-origin script import outright; text
-  // fetched and eval'd goes through the same door the agent's direct injection
-  // uses, so one source works for both. ponytail: eval of our own source, dev-only.
+  // The real reason: one text payload works for both this loader and any future
+  // direct injection, with no <script> tag and no module graph to keep in sync.
+  //
+  // This is NOT a CSP workaround, and is in some ways weaker than direct injection:
+  // browser_evaluate runs over CDP and is not subject to page CSP at all, but this
+  // fetch-and-eval path is subject to it twice over — `fetch` needs connect-src to
+  // allow 127.0.0.1, and (0, eval) below needs script-src 'unsafe-eval'. A page that
+  // denies either will refuse this path outright. Reaching those pages is an open
+  // problem for a later phase, not something this design solves.
+  // ponytail: eval of our own source, dev-only.
   function boot(baseUrl) {
     if (typeof window !== "undefined" && window.__annotator) return Promise.resolve("already-running");
     var base = String(baseUrl).replace(/\/?$/, "/");

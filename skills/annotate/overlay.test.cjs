@@ -2,7 +2,7 @@
 // Pure helpers now live in overlay/core.js and are required directly; overlay.js
 // itself is now just the loader (Task 6) — its source is still read (never
 // executed here) for the file-input regression guard and the loader's own checks.
-// Run: node .claude/skills/annotate/overlay.test.cjs
+// Run: node skills/annotate/overlay.test.cjs
 const fs = require("node:fs");
 const assert = require("node:assert");
 
@@ -191,7 +191,7 @@ const indexSrc = fs.readFileSync(MOD("index.js"), "utf8");
 
 // The four window entry points the skill's watch loop calls. Renaming any of
 // them breaks the agent silently — the poll just never returns anything.
-for (const api of ["__annotatorDrain", "__annotatorWait", "__annotatorPerfTake", "__annotatorReveal"]) {
+for (const api of ["__annotatorDrain", "__annotatorWait", "__annotatorPerfTake", "__annotatorReveal", "__annotatorImageTake"]) {
   assert.ok(indexSrc.indexOf("window." + api) !== -1, "index.js still exposes " + api);
 }
 

@@ -10,6 +10,9 @@ const TYPES = { ".js": "application/javascript; charset=utf-8", ".json": "applic
 function createServer(opts) {
   const root = path.resolve(opts.root);
   return http.createServer(function (req, res) {
+    // ceiling: "*" with no Host check is fine while root is one directory of MIT-published
+    // files any page may read; if --root ever widens, this turns a loopback server into
+    // arbitrary local-file read for any page in any browser on the machine.
     const cors = { "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store" };
     let rel;
     try {
