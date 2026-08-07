@@ -313,7 +313,7 @@
   // is accepted so this module stays a drop-in the same way point.js/measure.js are.
   function create(ctx) {
     var pal = ctx.pal, ui = ctx.ui;
-    var chrome = null, pinned = null, lastEl = null;
+    var chrome = null, pinned = null, lastEl = null, favData = null;
 
     function paint(el, x, y) {
       chrome.render(readElement(el));
@@ -355,9 +355,12 @@
       // the next mousemove over that SAME element is silently ignored, so the
       // panel/highlight can show a stale element until the cursor reaches a
       // THIRD, different one.
-      if (pinned === e.target) { pinned = null; lastEl = null; return; }
+      if (pinned === e.target) { pinned = null; lastEl = null; favData = null; return; }
       pinned = e.target;
       lastEl = null;
+      // A stale note/tags from the PREVIOUS pin must never attach itself to a
+      // newly pinned, different element — same reset discipline as lastEl above.
+      favData = null;
       ui.showHighlight(pinned);
       paint(pinned, e.clientX, e.clientY);
     }
@@ -375,7 +378,7 @@
       attached = false;
       document.removeEventListener("mousemove", onMousemove, true);
       document.removeEventListener("click", onClick, true);
-      pinned = null; lastEl = null;
+      pinned = null; lastEl = null; favData = null;
       ui.hideHighlight();
       if (chrome) { chrome.destroy(); chrome = null; }
     }
@@ -417,7 +420,34 @@
       });
     }
 
-    return { enable: enable, disable: disable, readElement: readElement, readPage: readPage, readMotion: readMotion, take: take };
+    // Pins a note/tags to whatever is currently pinned. No-op (returns null)
+    // if nothing is pinned — there is nothing to attach a favourite to yet.
+    // `url` is captured HERE, from location.href, never from a parameter: the
+    // user needs to know where a decision came from six months later, and a
+    // caller-supplied url could be stale or wrong by the time this runs.
+    function favourite(note, tags) {
+      if (!pinned) return null;
+      favData = { note: note || "", tags: tags || [], url: location.href, ts: Date.now() };
+      return favData;
+    }
+
+    // The agent-facing full favourite readout. Reuses take() rather than
+    // re-implementing its Promise/ceiling handling — take() already resolves
+    // once the motion sample's async tiers (3 and 4) leave their pending
+    // state, with a 3s ceiling so this can never hang the agent's tool call.
+    // A favourite() call is optional before this runs: if the user pinned an
+    // element but never filled in note/tags, this still hands back real
+    // element+motion data with an empty note/tags rather than null.
+    function takeFavourite() {
+      if (!pinned) return Promise.resolve(null);
+      var fav = favData || { note: "", tags: [], url: location.href, ts: Date.now() };
+      return take().then(function (result) {
+        if (!result) return null;
+        return { element: result.element, motion: result.motion, note: fav.note, tags: fav.tags, url: fav.url, ts: fav.ts };
+      });
+    }
+
+    return { enable: enable, disable: disable, readElement: readElement, readPage: readPage, readMotion: readMotion, take: take, favourite: favourite, takeFavourite: takeFavourite };
   }
 
   return { create: create };

@@ -738,4 +738,82 @@ var stringResult = core.reconcile({ shadowLabel: "abc" }, {});
 var stringTotal = stringResult.fits.length + stringResult.adopt.length + stringResult.conflicts.length;
 assert.strictEqual(stringTotal, 1, "a bare string study value is ONE token, not one entry per character");
 
-console.log("overlay.test: ok");
+// ---- Task 2: Favouriting in Study mode ------------------------------------
+
+// study.create() itself touches no DOM (only enable() does, via createChrome),
+// so this is a real behavioral check, not a source-text grep: call it for
+// real and inspect the returned handles.
+var studyCtx = { pal: {}, ui: { isOurs: function () { return false; } } };
+var studyHandles = study.create(studyCtx);
+assert.strictEqual(typeof studyHandles.favourite, "function", "study.create() exposes favourite()");
+assert.strictEqual(typeof studyHandles.takeFavourite, "function", "study.create() exposes takeFavourite()");
+
+// Nothing is pinned in a fresh create() (enable() was never called) — calling
+// favourite() must not throw, and must not fabricate a record with nothing to
+// attach it to.
+assert.strictEqual(studyHandles.favourite("a note", ["x"]), null, "favourite() is a no-op (returns null) when nothing is pinned");
+
+// takeFavourite() must return a real Promise — never undefined, never a
+// synchronous value — and it must resolve to null (not reject) when nothing
+// is pinned. This exercises the exact early-return path take() already uses,
+// with no DOM access required.
+var favPromise = studyHandles.takeFavourite();
+assert.ok(favPromise instanceof Promise, "takeFavourite() returns a Promise");
+
+// favourite(note, tags) must take exactly two parameters — no third `url`
+// parameter a caller could use to override capture-time location.href.
+assert.ok(/function favourite\s*\(\s*note,\s*tags\s*\)/.test(studySrc),
+  "favourite(note, tags) takes exactly two params — no url parameter");
+
+// Both favourite() and takeFavourite() must source url from location.href
+// directly, inside the module — never accept it as an argument.
+var favouriteBody = extractFunction(studySrc, "favourite");
+var takeFavouriteBody = extractFunction(studySrc, "takeFavourite");
+assert.ok(favouriteBody.length > 0, "found study.js's favourite() to inspect");
+assert.ok(takeFavouriteBody.length > 0, "found study.js's takeFavourite() to inspect");
+assert.ok(/location\.href/.test(favouriteBody) || /location\.href/.test(takeFavouriteBody),
+  "url is captured from location.href inside the module, not passed in");
+
+// takeFavourite() must REUSE take()'s existing Promise/ceiling machinery, not
+// re-implement it — a fresh `new Promise`/`setTimeout` here would mean the
+// motion sample is redone from scratch, ungated by take()'s 3s ceiling.
+assert.ok(/\btake\(\)/.test(takeFavouriteBody), "takeFavourite() calls take(), reusing its existing path");
+assert.ok(!/new Promise/.test(takeFavouriteBody), "takeFavourite() does not re-implement take()'s Promise wrapping");
+assert.ok(!/setTimeout/.test(takeFavouriteBody), "takeFavourite() does not re-implement take()'s ceiling timer");
+
+// study.js's create() must return both as real handles (source-text, mirroring
+// the existing take() check above it).
+assert.ok(/favourite:\s*favourite/.test(studySrc), "study.js's create() exposes favourite in its return object");
+assert.ok(/takeFavourite:\s*takeFavourite/.test(studySrc), "study.js's create() exposes takeFavourite in its return object");
+
+// index.js must expose the agent-facing entry point, wired to takeFavourite()
+// (not to favourite(), and not a bare re-export with the wrong arity).
+assert.ok(indexSrc.indexOf("window.__annotatorStudyFavourite") !== -1, "index.js exposes __annotatorStudyFavourite");
+assert.ok(/window\.__annotatorStudyFavourite\s*=\s*function\s*\(\s*\)\s*{\s*return\s+studyMode\.takeFavourite\(\)\s*;?\s*}/.test(indexSrc),
+  "__annotatorStudyFavourite forwards to studyMode.takeFavourite()");
+
+// ui.js gains a generic note/tag input — exposed as handles, not as a
+// mode-aware branch. The existing "no mode branching" assertions above
+// already re-run against this same uiSrc, so a violation here fails them too;
+// these two additionally prove the new handles are real, not just absent
+// mode-checks.
+assert.ok(/setFavouriteVisible\s*:/.test(uiSrc), "ui.js exposes setFavouriteVisible, mirroring setClickHint's show/hide-from-outside pattern");
+assert.ok(/onFavouriteSave\s*:/.test(uiSrc), "ui.js exposes onFavouriteSave so index.js can wire the note/tag submit without ui.js knowing about study mode");
+
+// index.js is the one that decides visibility and wires the callback through
+// to studyMode.favourite() — ui.js must never call studyMode itself.
+assert.ok(/setFavouriteVisible/.test(indexSrc), "index.js drives favourite-panel visibility, keeping mode logic out of ui.js");
+assert.ok(/onFavouriteSave/.test(indexSrc), "index.js registers the favourite-save handler");
+assert.ok(/studyMode\.favourite\(/.test(indexSrc), "index.js's favourite-save handler calls studyMode.favourite()");
+assert.ok(!/studyMode\.favourite/.test(uiSrc), "ui.js never calls studyMode directly");
+
+Promise.all([
+  favPromise.then(function (v) {
+    assert.strictEqual(v, null, "takeFavourite() resolves null (not undefined, not rejected) when nothing is pinned");
+  })
+]).then(function () {
+  console.log("overlay.test: ok");
+}).catch(function (e) {
+  console.error(e);
+  process.exitCode = 1;
+});
