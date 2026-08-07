@@ -186,10 +186,32 @@
     return out;
   }
 
+  // Pure: does this selector target :root's OWN custom properties — the plain
+  // set or a themed override (`:root[data-theme="dark"]`, `.dark`, a compound
+  // list like `:root, .dark`)? The dark/themed set is often the more
+  // interesting one to someone studying a design, so it must not be dropped.
+  // `.dark` only counts as a COMPLETE class — `.darkroom` and
+  // `.dark-blue-button` are component names, not theme roots, and matching
+  // them as substrings would drag unrelated component styles into the
+  // reported tokens as if they were the site's theme set.
+  function isRootSelector(sel) {
+    if (!sel) return false;
+    var parts = sel.split(",");
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i].replace(/^\s+|\s+$/g, "");
+      if (p.indexOf(":root") === 0) return true;
+      if (p === "html") return true;
+      if (p === ".dark" || p === ".light") return true;
+      if (p.indexOf(".dark.") === 0 || p.indexOf(".dark[") === 0 || p.indexOf(".dark:") === 0) return true;
+      if (p.indexOf("[data-theme") !== -1) return true;
+    }
+    return false;
+  }
+
   return {
     buildSelector: buildSelector, fitDimensions: fitDimensions,
     classifyRequest: classifyRequest, createPerfBuffer: createPerfBuffer,
     findRscEntry: findRscEntry, tallyValues: tallyValues, detectScale: detectScale,
-    defaultsFor: defaultsFor, toTailwind: toTailwind,
+    defaultsFor: defaultsFor, toTailwind: toTailwind, isRootSelector: isRootSelector,
   };
 });

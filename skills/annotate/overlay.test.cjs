@@ -371,11 +371,24 @@ assert.ok(/--/.test(studySrc) && /customProps|customProperties/.test(studySrc), 
 assert.ok(/__ann-ui/.test(exciseFunction(studySrc, "createChrome")),
   "page sweep excludes the tool's own chrome (__ann-ui) from the design system it reports");
 
-// :root matching must not be an exact-string match only — real sites declare
-// dark-mode token overrides on `:root[data-theme="dark"]` or `.dark`, and an
-// exact match would silently drop the dark set, which is often the more
-// interesting one to someone reverse-engineering the design.
-assert.ok(/data-theme/.test(studySrc) && /\.dark|dark/.test(studySrc),
-  "page sweep matches themed :root overrides (data-theme/.dark), not just exact :root/html");
+// isRootSelector: does this selector target :root's OWN custom properties —
+// plain or themed? Lives in core.js (pure, no DOM) so it's testable for real,
+// by calling it, not by grepping study.js for strings that also appear in
+// comments (a grep like /data-theme/.test(studySrc) would pass even if this
+// function were deleted entirely — it proves nothing).
+assert.strictEqual(core.isRootSelector(":root"), true, ":root itself");
+assert.strictEqual(core.isRootSelector("html"), true, "html itself");
+assert.strictEqual(core.isRootSelector(':root[data-theme="dark"]'), true, "themed :root override");
+assert.strictEqual(core.isRootSelector(":root, .dark"), true, "compound list — one branch qualifies");
+assert.strictEqual(core.isRootSelector(".dark"), true, ".dark as a complete class is a theme root");
+assert.strictEqual(core.isRootSelector(".darkroom"), false, ".darkroom is a component, not a theme root (the bug)");
+assert.strictEqual(core.isRootSelector(".dark-blue-button"), false, ".dark-blue-button is a component, not a theme root (the bug)");
+assert.strictEqual(core.isRootSelector("body"), false, "body is not :root");
+assert.strictEqual(core.isRootSelector(".card"), false, "an ordinary component class");
+assert.strictEqual(core.isRootSelector(""), false, "empty selector");
+
+// study.js must consume the shared matcher, not keep its own copy — a second
+// implementation is exactly how these two would drift apart again.
+assert.ok(/isRootSelector\s*=\s*core\.isRootSelector/.test(studySrc), "study.js consumes core.isRootSelector, not a local reimplementation");
 
 console.log("overlay.test: ok");

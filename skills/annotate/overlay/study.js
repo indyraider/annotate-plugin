@@ -17,6 +17,7 @@
   var buildSelector = core.buildSelector;
   var defaultsFor = core.defaultsFor;
   var toTailwind = core.toTailwind;
+  var isRootSelector = core.isRootSelector;
   var SANS = palette.SANS;
   var MONO = palette.MONO;
   var Z = 2147483647;
@@ -129,20 +130,6 @@
   // rgba(0, 0, 0, 0) / "transparent" are the computed values for "no colour set" —
   // counting them would report the page's biggest "colour" as invisible.
   function isOpaqueColor(v) { return !!v && v !== "rgba(0, 0, 0, 0)" && v !== "transparent"; }
-
-  // Real dark/light token overrides rarely sit on a literal `:root` alone —
-  // `:root[data-theme="dark"]`, `.dark`, or `:root, .dark` are the common
-  // shapes, and the dark set is often the more interesting one to study. Split
-  // on commas: a compound selector list only needs one branch to qualify.
-  function isRootSelector(sel) {
-    if (!sel) return false;
-    var parts = sel.split(",");
-    for (var i = 0; i < parts.length; i++) {
-      var p = parts[i].replace(/^\s+|\s+$/g, "");
-      if (p.indexOf(":root") === 0 || p === "html" || p.indexOf(".dark") !== -1 || p.indexOf("[data-theme") !== -1) return true;
-    }
-    return false;
-  }
 
   // :root's own custom properties — the author's own design tokens — bucketed
   // by the exact selector they were declared under so a themed override is
