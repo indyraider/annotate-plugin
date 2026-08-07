@@ -859,6 +859,26 @@ assert.strictEqual(core.classifyValue("0 1px 2px black", ["0 1px 2px black", "0 
 assert.strictEqual(core.classifyValue("20rem", ["16px", "24px", "32px"]).verdict, "new",
   "rem against a px scale is not comparable — 'new', never a conflict fabricated out of a unit mismatch");
 
+// ---- Task 5: absent values are not design decisions ------------------------
+
+// Found in the real browser run, not by reading: getComputedStyle answers every
+// property whether the author set it or not, so a studied card came back with
+// boxShadow "none" and paddingTop "0px" and the promote step duly offered to
+// adopt `shadow: none` into the user's design language. Filtering happens at
+// the caller, so the helper has to be right about both directions.
+["none", "normal", "auto", "0", "0px", "0%", "0s", "transparent", "rgba(0, 0, 0, 0)", "", null, undefined]
+  .forEach(function (v) {
+    assert.strictEqual(core.isAbsentValue(v), true, JSON.stringify(v) + " is the absence of a decision, not one");
+  });
+
+// Real values must survive — a filter that eats them loses the user's decision,
+// which is the failure this whole phase is built to prevent. "0 1px 2px black"
+// starts with a zero and must NOT be mistaken for the absent "0".
+["12px", "0 1px 2px black", "1.5rem", "600", "#fff", "rgb(0, 0, 0)", "cubic-bezier(.2,.8,.2,1)"]
+  .forEach(function (v) {
+    assert.strictEqual(core.isAbsentValue(v), false, JSON.stringify(v) + " is a real value and must survive the filter");
+  });
+
 // ---- Task 3: the seed design-language template ----------------------------
 
 // The template is shipped into OTHER people's projects. Portability is a

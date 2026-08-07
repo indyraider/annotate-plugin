@@ -270,6 +270,22 @@
     var m = DIMENSION.exec(String(v));
     return m ? { n: Number(m[1]), unit: m[2] || "" } : null;
   }
+  // Pure: is this computed value the ABSENCE of a decision rather than one?
+  // The computed-style read answers every property whether or not the author
+  // set it, so a studied element hands back `boxShadow: "none"`, `paddingTop: "0px"`
+  // for the overwhelmingly common case of "there isn't one". Fed to reconcile
+  // those arrive as adoptable tokens, and the promote step asks the user to
+  // adopt `shadow: none` into their design language — noise that buries the two
+  // or three values that are real decisions. Callers filter with this; it is
+  // deliberately NOT applied inside reconcile, because "no shadow, on purpose"
+  // is occasionally a real decision and only the user can say which it is.
+  function isAbsentValue(v) {
+    if (v == null || v === "") return true;
+    var s = String(v).trim().toLowerCase();
+    return s === "none" || s === "normal" || s === "auto" || s === "0" || s === "0px" ||
+           s === "0%" || s === "0s" || s === "0ms" || s === "rgba(0, 0, 0, 0)" || s === "transparent";
+  }
+
   // Every numeric read of a scale token goes through this, not bare Number().
   // A scale is just as likely to be written ["6px","10px","16px"] as [6,10,16],
   // and one bare Number() left behind is enough to turn the whole comparison
@@ -396,5 +412,6 @@
     defaultsFor: defaultsFor, toTailwind: toTailwind, isRootSelector: isRootSelector,
     isOwnModuleUrl: isOwnModuleUrl, isMotionFingerprintUrl: isMotionFingerprintUrl,
     nearestInScale: nearestInScale, classifyValue: classifyValue, reconcile: reconcile,
+    isAbsentValue: isAbsentValue,
   };
 });

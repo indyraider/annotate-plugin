@@ -220,6 +220,14 @@ if you need a real answer for that element.
   the local app. **Not yet exercised through the MCP tool itself** — the boot was verified in
   a directly-driven Chromium, so if `browser_run_code_unsafe` is unavailable or refused, say
   so rather than falling back silently to a path that cannot work.
+- **A link can't be favourited — pinning it also navigates away.** Study deliberately never
+  calls `preventDefault` (making the page inert was a Phase 1a bug, since studying a site
+  means moving through it). The consequence, seen live on 2026-08-07: clicking a CTA pins it
+  *and* follows the href, and the navigation wipes the overlay before you can save anything.
+  So the single most-studied element on any site — the primary button — is the one you can't
+  favourite. Workaround: pin a non-navigating element, or study the button's styles from a
+  page where it isn't a link. There is no modifier that pins without navigating; adding one
+  is an open design decision, not something to improvise.
 - **First-paint-only effects are missed** — the overlay injects after the page has already
   loaded, so anything that only ever runs once, on initial paint, isn't there to observe.
 - **Shadow DOM isn't walked.** Elements inside a shadow root need separate handling that
@@ -325,6 +333,13 @@ the study side from the favourite's `element.nonDefault` (`borderRadius` → `ra
 and `gap` → `spacing`, `boxShadow` → `shadows`, `fontSize` → `typeScale`), and the language
 side by reading his document's tables. A category his document has no section for is just an
 empty array — the classifier resolves that to "new" on its own.
+
+**Drop the absent values first** — `core.isAbsentValue(v)` is there for it. The style read
+answers every property whether the site's author set one or not, so a plain card hands back
+`boxShadow: "none"` and `paddingTop: "0px"`. Fed straight in, those come back as tokens to
+adopt, and you end up asking Matt to add "no shadow" to his design language. Filter, then
+reconcile. (It's a caller-side filter on purpose: "no shadow, deliberately" is occasionally a
+real decision, and only he can say which one this is.)
 
 **Units are handled, mismatched units are not.** `"20px"` and `20` compare the same; a
 multi-part value like `"0 8px 30px rgba(0,0,0,.12)"` stays one opaque token and can only
