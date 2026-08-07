@@ -17,11 +17,17 @@
   // direct injection, with no <script> tag and no module graph to keep in sync.
   //
   // This is NOT a CSP workaround, and is in some ways weaker than direct injection:
-  // browser_evaluate runs over CDP and is not subject to page CSP at all, but this
-  // fetch-and-eval path is subject to it twice over — `fetch` needs connect-src to
-  // allow 127.0.0.1, and (0, eval) below needs script-src 'unsafe-eval'. A page that
-  // denies either will refuse this path outright. Reaching those pages is an open
-  // problem for a later phase, not something this design solves.
+  // browser_evaluate runs over CDP and is not subject to page CSP at all, while this
+  // path adds a network request that can be refused.
+  //
+  // Measured 2026-08-07, and it is NOT what the comment here used to claim. CSP does
+  // not stop this: all eight modules eval and boot on github.com under
+  // `default-src 'none'` with no 'unsafe-eval'. What fails is the fetch below, and the
+  // reason is Chrome's Local Network Access permission, not connect-src — it fails the
+  // same way on a page with no CSP at all ("Permission was denied for this request to
+  // access the `loopback` address space"), and bypassing CSP does not help. From a
+  // local origin the same fetch returns 200, which is why the dev app never saw it.
+  // The fix is to skip the fetch entirely and inject from disk; see SKILL.md.
   // ponytail: eval of our own source, dev-only.
   function boot(baseUrl) {
     if (typeof window !== "undefined" && window.__annotator) return Promise.resolve("already-running");

@@ -188,12 +188,38 @@ if you need a real answer for that element.
 **Honest limits — report these, don't paper over them:**
 - **Illustrations/images** yield dimensions, URL, and placement — never the artwork itself.
   That's an asset, not a style; no inspector reconstructs it.
-- **Content-Security-Policy is an open problem, not a solved one.** The overlay boots via
-  an in-page `eval` plus a `fetch` back to `127.0.0.1`; a page whose `script-src` lacks
-  `'unsafe-eval'`, or whose `connect-src` blocks localhost, refuses the overlay entirely —
-  Study can't run there at all. This matters more for Study than any other mode, because
-  the sites most worth studying are exactly the ones most likely to ship a strict CSP. If
-  the overlay fails to boot on a target site, say so plainly rather than guessing why.
+- **Booting on a public site: it is not CSP, it is Local Network Access** (measured
+  2026-08-07 — this bullet previously blamed CSP and was wrong). Two separate things were
+  conflated:
+  - **CSP does not block the overlay.** `browser_evaluate` runs over CDP, which Chromium
+    exempts from page CSP. All eight modules eval and boot cleanly on `github.com`, whose
+    policy is `default-src 'none'` with no `'unsafe-eval'` — `__annotator` comes up live and
+    `__annotatorStudyPage()` returns the real sweep, with no console errors.
+  - **The `fetch` to `127.0.0.1` is what fails, and CSP is not why.** It fails identically on
+    a page with *no CSP at all* and on a plain-`http` page. Chrome says: *"blocked by CORS
+    policy: Permission was denied for this request to access the `loopback` address space"* —
+    Chrome's Local Network Access permission, which a public origin cannot get without a user
+    prompt no automated browser can answer. `Page.setBypassCSP` and a context created with
+    `bypassCSP: true` **both fail to help**, precisely because the block is not CSP.
+    From a local origin (`http://localhost:3000`) the same fetch returns 200 — which is why
+    this never showed up against the dev app.
+
+  **The escape hatch, verified working:** skip the fetch. Read `overlay/*.js` from disk in the
+  Playwright process and evaluate each in order — no network request, so there is nothing left
+  to block. Costs no context tokens either, same as the server.
+  ```
+  browser_run_code_unsafe({ code: `async (page) => {
+    const fs = await import("node:fs/promises");
+    const dir = "<this skill's directory>/overlay";
+    for (const f of ["core.js","palette.js","ui.js","point.js","measure.js","study-motion.js","study.js","index.js"])
+      await page.evaluate(await fs.readFile(dir + "/" + f, "utf8"));
+    return await page.evaluate(() => { window.__annotatorMods.index.setup(); return "ready"; });
+  }` })
+  ```
+  Use this whenever the target is a public site; Setup's `__annotatorBoot` path is fine for
+  the local app. **Not yet exercised through the MCP tool itself** — the boot was verified in
+  a directly-driven Chromium, so if `browser_run_code_unsafe` is unavailable or refused, say
+  so rather than falling back silently to a path that cannot work.
 - **First-paint-only effects are missed** — the overlay injects after the page has already
   loaded, so anything that only ever runs once, on initial paint, isn't there to observe.
 - **Shadow DOM isn't walked.** Elements inside a shadow root need separate handling that
