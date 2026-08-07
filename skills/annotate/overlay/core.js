@@ -234,11 +234,26 @@
     return OWN_MODULE_FILES.indexOf(basename) !== -1;
   }
 
+  // Pure: does this resource URL name a motion library — judged by its
+  // BASENAME with word boundaries, never a raw substring test on the whole
+  // URL. A bare "motion" substring happily matches /assets/promotions.js,
+  // promotion-banner.css, and emotion.js (the CSS-in-JS library, unrelated to
+  // motion) — and "promotions" is near-universal on ecommerce/marketing
+  // sites, precisely the population Study exists to study. Basename +
+  // boundary keeps `motion.abc.js`/`framer-motion.chunk.js` matching while
+  // rejecting `promotions.js`/`emotion.js`/`promotion-banner.css`.
+  var MOTION_FINGERPRINT_RE = /(^|[^a-z])(gsap|three|lottie|framer-motion|motion|anime|lenis|locomotive)([^a-z]|$)/i;
+  function isMotionFingerprintUrl(url) {
+    if (!url) return false;
+    var basename = String(url).split("?")[0].split("/").pop();
+    return MOTION_FINGERPRINT_RE.test(basename);
+  }
+
   return {
     buildSelector: buildSelector, fitDimensions: fitDimensions,
     classifyRequest: classifyRequest, createPerfBuffer: createPerfBuffer,
     findRscEntry: findRscEntry, tallyValues: tallyValues, detectScale: detectScale,
     defaultsFor: defaultsFor, toTailwind: toTailwind, isRootSelector: isRootSelector,
-    isOwnModuleUrl: isOwnModuleUrl,
+    isOwnModuleUrl: isOwnModuleUrl, isMotionFingerprintUrl: isMotionFingerprintUrl,
   };
 });

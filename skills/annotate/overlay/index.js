@@ -57,12 +57,16 @@
       var m = state.mode, c = window.__annotations.length;
       if (m === "measure") {
         uiHandles.setPillLabel("◉ Measure: REC" + (measureMode.size() ? " · " + measureMode.size() : ""), pal.accent, pal.accentFg);
+        uiHandles.setClickHint("Passes through (recording)");
       } else if (m === "study") {
         uiHandles.setPillLabel("◈ Study", pal.accent, pal.accentFg);
+        uiHandles.setClickHint("Pin the readout");
       } else if (m === "on") {
         uiHandles.setPillLabel("● Annotate: ON" + (c ? " · " + c : ""), pal.accent, pal.accentFg);
+        uiHandles.setClickHint("Leave a comment");
       } else {
         uiHandles.setPillLabel("○ Annotate: OFF" + (c ? " · " + c : ""), pal.surface2, pal.text2);
+        uiHandles.setClickHint("Leave a comment");
       }
     }
 

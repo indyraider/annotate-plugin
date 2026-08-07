@@ -350,8 +350,14 @@
     function onClick(e) {
       if (e.shiftKey) return;
       if (ui.isOurs(e.target)) return;
-      if (pinned === e.target) { pinned = null; return; }
+      // lastEl must reset on BOTH branches: it's the mousemove "same target as
+      // last time, skip the readout" cache. Left stale after a pin -> unpin,
+      // the next mousemove over that SAME element is silently ignored, so the
+      // panel/highlight can show a stale element until the cursor reaches a
+      // THIRD, different one.
+      if (pinned === e.target) { pinned = null; lastEl = null; return; }
       pinned = e.target;
+      lastEl = null;
       ui.showHighlight(pinned);
       paint(pinned, e.clientX, e.clientY);
     }

@@ -177,9 +177,13 @@
   // ---- Tier 3: detection without detail -------------------------------------
   // Bundled ES modules (and Framer Motion, which never had a global) expose
   // nothing to probe. Two signals instead: a network fingerprint (instant),
-  // and proof that something JS-driven is writing to this element (a ~1s
-  // sample of the frame loop correlated with style mutations).
-  var FINGERPRINT_RE = /gsap|three|lottie|framer-motion|motion|anime|lenis|locomotive/i;
+  // and proof that something JS-driven is writing to this element or its
+  // descendants (a ~1s sample of the frame loop correlated with style
+  // mutations).
+  // The actual matcher (word-bounded, basename-only) lives in core.js as
+  // core.isMotionFingerprintUrl — a bare substring test here matched
+  // /assets/promotions.js and emotion.js (the CSS-in-JS library) on any real
+  // ecommerce site, which tier 4 then fetched in full.
   function fingerprintFromNetwork() {
     var matches = [];
     try {
@@ -189,13 +193,18 @@
       // above matches this file's own name. Without excluding our own modules,
       // Study would report a spurious "motion library detected" on every site,
       // every session. core.isOwnModuleUrl needs the boot base for a same-origin
-      // check; falls back to null (excludes nothing) if it isn't set.
-      var bootBase = null;
-      try { bootBase = localStorage.getItem("__ann_boot_url"); } catch (e0) {}
+      // check; falls back to null (excludes nothing) if it isn't set. The base
+      // is read from the in-memory stash overlay.js's boot() sets FIRST — a
+      // sandboxed iframe or storage-blocked context makes localStorage throw on
+      // both the write and this read, and without the in-memory fallback
+      // isOwnModuleUrl silently gets `null` and excludes nothing, so Study
+      // reports its own study-motion.js as "a motion library" on every such page.
+      var bootBase = (typeof window !== "undefined" && window.__annBootBase) || null;
+      if (!bootBase) { try { bootBase = localStorage.getItem("__ann_boot_url"); } catch (e0) {} }
       var entries = performance.getEntriesByType("resource");
       for (var i = 0; i < entries.length; i++) {
         var name = entries[i].name;
-        if (FINGERPRINT_RE.test(name) && !core.isOwnModuleUrl(name, bootBase)) matches.push(name);
+        if (core.isMotionFingerprintUrl(name) && !core.isOwnModuleUrl(name, bootBase)) matches.push(name);
       }
     } catch (e) {}
     return matches;
@@ -230,7 +239,11 @@
       observer = new MutationObserver(function (mutations) {
         for (var i = 0; i < mutations.length; i++) { if (mutations[i].attributeName === "style") writeCount++; }
       });
-      observer.observe(el, { attributes: true, attributeFilter: ["style"] });
+      // subtree: true — a card whose CHILD is the animated node (very common:
+      // an inner wrapper gets the transform/opacity write, not the card itself)
+      // must count too, or jsDriven comes back false on it: a silent false
+      // negative reported as fact, the exact thing Study must never do.
+      observer.observe(el, { attributes: true, attributeFilter: ["style"], subtree: true });
     } catch (e) { observer = null; }
 
     function finish(cancelled) {
@@ -251,6 +264,9 @@
           styleWritesPerSec: elapsed > 0 ? Math.round(writeCount / (elapsed / 1000)) : 0
         };
         result.jsDriven = result.styleWritesPerSec > 0;
+        // subtree: true above means this covers the element OR ITS DESCENDANTS —
+        // a false jsDriven here would be a silent false negative reported as fact.
+        result.scope = "element or its descendants";
       }
       try { done(result); } catch (e3) { /* cleanup above already ran; a bad callback must not leak the patch */ }
     }
@@ -259,6 +275,19 @@
     var handle = { cancel: function () { finish(true); } };
     activeSample = handle;
     return handle;
+  }
+
+  // Tier 4 only ever detects the JS-style `//# sourceMappingURL=` comment,
+  // never CSS's `/*# ... */` — so a CSS/font/image URL in the fingerprint
+  // (a web font, a promo banner) can never match and is a wasted fetch, and
+  // "candidateScripts" containing a .woff2 is a misleading field name too.
+  function filterJsUrls(urls) {
+    var out = [];
+    for (var i = 0; i < urls.length; i++) {
+      var path = String(urls[i]).split("?")[0].split("#")[0];
+      if (/\.js$/i.test(path)) out.push(urls[i]);
+    }
+    return out;
   }
 
   // ---- Tier 4: source maps ---------------------------------------------------
@@ -286,6 +315,12 @@
     var tiers = [];
     if (r.tier1.found) tiers.push("tier1: browser API (complete)");
     if (anyTier2Present(r.tier2)) tiers.push("tier2: library global (near-complete)");
+    // A cancelled sample (superseded by a second concurrent take()) must never
+    // be summarized as "no motion" — that is a confident false negative, the
+    // one thing this feature must never report. Independent of the fingerprint/
+    // jsDriven line below: a cancelled live sample can still coexist with a real
+    // network fingerprint, and both are worth reporting.
+    if (r.tier3.proof && r.tier3.proof.cancelled) tiers.push("tier3: sample cancelled (superseded)");
     if ((r.tier3.fingerprint && r.tier3.fingerprint.length) || (r.tier3.proof && r.tier3.proof.jsDriven)) tiers.push("tier3: inferred (detection without detail)");
     if (r.tier4.sourceMaps && r.tier4.sourceMaps.length) tiers.push("tier4: source map found (jackpot)");
     return { tiersWithData: tiers, summary: tiers.length ? tiers.join("; ") : "no motion detected on this element" };
@@ -298,11 +333,12 @@
   // time one of those finishes with the same result object, enriched in place.
   function readMotion(el, onUpdate) {
     var networkFingerprint = fingerprintFromNetwork();
+    var jsCandidates = filterJsUrls(networkFingerprint);
     var result = {
       tier1: readTier1(el),
       tier2: readTier2(),
       tier3: { fingerprint: networkFingerprint, proof: { status: "sampling" } },
-      tier4: { candidateScripts: networkFingerprint, sourceMaps: [], status: "checking" },
+      tier4: { candidateScripts: jsCandidates, sourceMaps: [], status: "checking" },
       confidence: null
     };
     result.confidence = summarizeConfidence(result);
@@ -314,7 +350,7 @@
       if (typeof onUpdate === "function") onUpdate(result);
     });
 
-    probeSourceMaps(networkFingerprint, function (maps) {
+    probeSourceMaps(jsCandidates, function (maps) {
       result.tier4.sourceMaps = maps;
       result.tier4.status = "done";
       result.confidence = summarizeConfidence(result);

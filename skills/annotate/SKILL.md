@@ -167,15 +167,23 @@ carries `tier1` through `tier4` plus a `confidence` summary
 lean on it rather than re-deriving confidence yourself. **Never present a tier-3 inference
 as a tier-1 fact** — "this element animates via `transform`, easing `cubic-bezier(...)`" is
 only true if it came from tier 1; a tier-3 finding is "something JS-driven is writing to
-this element's style ~30 times a second," not a transition curve, and must be worded that
-way.
+this element's (or one of its descendants') style ~30 times a second," not a transition
+curve, and must be worded that way.
 
 | Tier | What it covers | Confidence |
 |------|-----------------|------------|
 | **1 — `getAnimations()`** | Every CSS transition, CSS animation, and Web Animations API animation, with real keyframes and timing. A browser standard since 2020. | **Complete, not approximate.** If tier 1 found it, report it as fact. |
 | **2 — library reachable via a global** | GSAP (the jackpot): every tween and every ScrollTrigger binding — trigger, start, end, progress. Lottie: the animation's JSON URL (the whole animation *is* that file). Three.js: version + canvas count. | **Near-complete**, but only for libraries that expose a global. |
-| **3 — detection without detail** | Bundled libraries with no global (Framer Motion never had one) fingerprinted from network entries, plus proof of JS-driven motion from a ~1s sample of the frame loop correlated against style mutations. | **Detection, not detail.** You learn *that* something animates and roughly how, never the actual code or curve. |
+| **3 — detection without detail** | Bundled libraries with no global (Framer Motion never had one) fingerprinted from network entries, plus proof of JS-driven motion from a ~1s sample of the frame loop correlated against style mutations on **the element or its descendants** (`tier3.proof.scope`). | **Detection, not detail.** You learn *that* something animates (this element or below it) and roughly how, never the actual code or curve. |
 | **4 — source maps** | Whether a source map exists for a fingerprinted script, and its URL. | **The jackpot when present** — but Study reports only that the map exists and where; **it does not fetch or parse it.** Never imply the original source is in hand — only that it's reachable. |
+
+**`tier3.proof.status` can be `"cancelled"`, not just `"done"`.** A second `take()` call
+pinned while the first is still sampling supersedes it — the superseded one resolves with
+`status: "cancelled"` and `jsDriven: false`. **That `false` is not a finding** — it means
+"this sample was superseded before it could observe anything," and `confidence.summary`
+reflects that honestly as `"tier3: sample cancelled (superseded)"` rather than folding it
+into "no motion detected." Don't report a cancelled sample as proof of no motion; re-`take()`
+if you need a real answer for that element.
 
 **Honest limits — report these, don't paper over them:**
 - **Illustrations/images** yield dimensions, URL, and placement — never the artwork itself.

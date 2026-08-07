@@ -74,6 +74,12 @@
       var t = document.createElement("span"); t.textContent = desc; t.style.color = pal.text2;
       d.append(kw, t); return d;
     }
+    // The "Click" row's own description is mode-dependent (comment / pin a
+    // readout / passes through) — ui.js owns no mode state (see the guard
+    // test below), so it only keeps a handle to the value span here; index.js
+    // (which already owns the pill label) decides the actual text via
+    // setClickHint().
+    var clickHintEl = null;
     [
       [["Alt", "A"], "Toggle on / off"],
       [["Hover"], "Inspect element"],
@@ -82,8 +88,13 @@
       [["⌘/Ctrl", "↵"], "Save comment"],
       [["Shift"], "Hold to click through"],
       [["Esc"], "Cancel comment"]
-    ].forEach(function (r) { guide.appendChild(kbdRow(r[0], r[1])); });
+    ].forEach(function (r) {
+      var row = kbdRow(r[0], r[1]);
+      guide.appendChild(row);
+      if (r[0].length === 1 && r[0][0] === "Click") clickHintEl = row.lastChild;
+    });
     bar.appendChild(guide);
+    function setClickHint(text) { if (clickHintEl) clickHintEl.textContent = text; }
 
     var controls = document.createElement("div"); Object.assign(controls.style, { display: "flex", alignItems: "center", gap: "8px" });
     var help = document.createElement("button"); help.textContent = "?"; help.setAttribute("aria-label", "Toggle shortcut guide");
@@ -111,6 +122,7 @@
       guide: guide,
       help: help,
       setPillLabel: setPillLabel,
+      setClickHint: setClickHint,
       isOurs: isOurs
     };
   }

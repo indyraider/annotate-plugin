@@ -231,6 +231,26 @@ for (const f of order) {
   at = i;
 }
 
+// core.js's OWN_MODULE_FILES and the loader's FILES are two hand-maintained
+// lists that must name the same files — a ninth module added to one but not
+// the other silently reintroduces the isOwnModuleUrl self-match bug (Study
+// reporting its own new module as a detected motion/whatever library) for
+// exactly the file that was left out. Extract each array literal and check
+// membership rather than trusting them to stay in sync by convention.
+function extractStringArray(src, varName) {
+  const m = new RegExp(varName + "\\s*=\\s*\\[([^\\]]*)\\]").exec(src);
+  if (!m) return [];
+  return (m[1].match(/["']([^"']+)["']/g) || []).map(function (s) { return s.slice(1, -1); });
+}
+const loaderFiles = extractStringArray(loaderSrc, "FILES");
+const ownModuleFiles = extractStringArray(coreSrc, "OWN_MODULE_FILES");
+assert.ok(loaderFiles.length > 0, "loader's FILES array is parseable");
+assert.ok(ownModuleFiles.length > 0, "core.js's OWN_MODULE_FILES array is parseable");
+for (const f of loaderFiles) {
+  assert.ok(ownModuleFiles.indexOf(f) !== -1,
+    "loader FILES entry '" + f + "' is missing from core.js's OWN_MODULE_FILES");
+}
+
 // ---- Phase 1a: pure helpers behind Study ----------------------------------
 
 // tallyValues: frequency order is what makes a palette readable — the colour
@@ -337,6 +357,15 @@ function exciseFunction(src, name) {
   }
   return src.slice(0, start) + src.slice(i);
 }
+// Sanity floor — extractFunction (below, Task 6) has one; this didn't. Its
+// dangerous failure direction is over-consumption (eating everything above
+// createChrome too, the exact bug the comment above already describes), which
+// silently widens the read-only exemption to functions that were never meant
+// to be excused. readElement is defined well before createChrome in study.js,
+// so it must still be present in the excised source.
+assert.ok(/function readElement/.test(exciseFunction(studySrc, "createChrome")),
+  "exciseFunction removed only createChrome, not the file before it");
+
 assert.ok(!/\.setAttribute\(|\.innerHTML\s*=|\.remove\(\)/.test(
   exciseFunction(studySrc, "createChrome")),
   "study.js does not mutate the inspected page");
@@ -362,7 +391,10 @@ assert.ok(/8000/.test(studySrc), "page sweep caps element count");
 assert.ok(/truncated/.test(studySrc), "page sweep reports truncation — silent caps have cost this project before");
 assert.ok(/detectScale/.test(studySrc), "page sweep runs grid detection");
 assert.ok(/tallyValues/.test(studySrc), "page sweep frequency-ranks values");
-assert.ok(/--/.test(studySrc) && /customProps|customProperties/.test(studySrc), "page sweep collects CSS custom properties");
+// `/--/` alone is vacuous — it matches the "// ----" section banners that
+// appear throughout this file (and most others in the repo), so it would stay
+// green even with readCustomProps() deleted entirely. Assert the call instead.
+assert.ok(/readCustomProps\(\)/.test(studySrc) && /customProps|customProperties/.test(studySrc), "page sweep collects CSS custom properties");
 
 // The sweep must exclude the tool's OWN chrome (highlight box, inspector card,
 // this very panel — all carry class __ann-ui) from the site's reported design
@@ -370,8 +402,12 @@ assert.ok(/--/.test(studySrc) && /customProps|customProperties/.test(studySrc), 
 // site's own. Checked with createChrome excised first, so this can't pass by
 // picking up createChrome's own `panel.className = "__ann-ui"` assignment —
 // it must find the exclusion check somewhere ELSE, i.e. on the sweep path.
-assert.ok(/__ann-ui/.test(exciseFunction(studySrc, "createChrome")),
-  "page sweep excludes the tool's own chrome (__ann-ui) from the design system it reports");
+// Asserted on the CALL, not a bare `/__ann-ui/` text search — the comment
+// directly above the real guard (readPage's "all class `__ann-ui`") satisfies
+// a bare substring search all by itself, so deleting the actual `el.closest(...)`
+// guard line left this test green. A comment can't satisfy a call pattern.
+assert.ok(/closest\(["']\.__ann-ui["']\)/.test(exciseFunction(studySrc, "createChrome")),
+  "page sweep skips our own overlay chrome");
 
 // isRootSelector: does this selector target :root's OWN custom properties —
 // plain or themed? Lives in core.js (pure, no DOM) so it's testable for real,
@@ -547,5 +583,82 @@ assert.strictEqual(
 // fingerprintFromNetwork must actually call the filter, not just have it lying
 // around unused in core.js.
 assert.ok(/core\.isOwnModuleUrl/.test(studyMotionSrc), "study-motion.js's fingerprint scan calls core.isOwnModuleUrl");
+
+// ---- Whole-branch review fix wave -----------------------------------------
+
+// IMPORTANT 1: FINGERPRINT_RE's bare "motion" substring matched
+// /assets/promotions.js, promotion-banner.css, and emotion.js (the CSS-in-JS
+// library, unrelated to motion) — "promotions" is near-universal on
+// ecommerce/marketing sites, exactly Study's target population. The real
+// matcher is core.isMotionFingerprintUrl: basename-only, word-bounded. A real
+// function called with real cases, not a source-text grep.
+assert.strictEqual(typeof core.isMotionFingerprintUrl, "function", "core exports isMotionFingerprintUrl");
+assert.strictEqual(core.isMotionFingerprintUrl("https://x.com/assets/promotions.js"), false, "promotions.js is not a motion library (the bug)");
+assert.strictEqual(core.isMotionFingerprintUrl("https://x.com/emotion.js"), false, "emotion.js (CSS-in-JS) is not a motion library (the bug)");
+assert.strictEqual(core.isMotionFingerprintUrl("https://x.com/promotion-banner.css"), false, "promotion-banner.css is not a motion library (the bug)");
+assert.strictEqual(core.isMotionFingerprintUrl("https://cdn.x/gsap.min.js"), true, "gsap.min.js is a motion library");
+assert.strictEqual(core.isMotionFingerprintUrl("https://x.com/a/motion.abc123.js"), true, "motion.abc123.js is a motion library");
+assert.strictEqual(core.isMotionFingerprintUrl("https://x.com/js/framer-motion.chunk.js"), true, "framer-motion.chunk.js is a motion library");
+assert.strictEqual(core.isMotionFingerprintUrl("https://x.com/three.module.js"), true, "three.module.js is a motion library");
+assert.strictEqual(core.isMotionFingerprintUrl(""), false, "empty url -> false, never throws");
+assert.strictEqual(core.isMotionFingerprintUrl(null), false, "null url -> false, never throws");
+
+// study-motion.js must actually call the real matcher, not keep the old bare
+// regex around (which would make the function above dead code the fingerprint
+// scan never uses).
+assert.ok(!/FINGERPRINT_RE/.test(studyMotionSrc), "the old unbounded FINGERPRINT_RE is gone from study-motion.js");
+assert.ok(/core\.isMotionFingerprintUrl/.test(studyMotionSrc), "study-motion.js's fingerprint scan calls core.isMotionFingerprintUrl");
+
+// IMPORTANT 2: the self-match bug returns whenever localStorage is unavailable.
+// Both the write (overlay.js's boot()) and the read (study-motion.js) swallow
+// their exceptions, and the read had no fallback — a sandboxed iframe or a
+// storage-blocked context left bootBase null, isOwnModuleUrl excluded nothing,
+// and Study reported its own study-motion.js as a detected motion library on
+// every such page.
+assert.ok(/window\.__annBootBase\s*=\s*base/.test(loaderSrc), "overlay.js's boot() also stashes the boot base in memory, next to the localStorage write");
+assert.ok(/window\.__annBootBase/.test(studyMotionSrc), "study-motion.js's fingerprint scan prefers the in-memory boot base over localStorage");
+
+// Minor 5: a cancelled tier-3 sample (superseded by a second concurrent
+// take()) must never be summarized as "no motion detected" — that is a
+// confident false negative, the one failure mode this feature must never
+// produce.
+assert.ok(/tier3\.proof\s*&&\s*r\.tier3\.proof\.cancelled/.test(studyMotionSrc), "summarizeConfidence checks for a cancelled tier-3 sample");
+assert.ok(/tier3: sample cancelled/.test(studyMotionSrc), "a cancelled sample is reported as cancelled, not folded into 'no motion detected'");
+
+// Minor 6: the tier-3 MutationObserver watched the element only — a card
+// whose CHILD is the animated node (a common structure: inner wrapper gets
+// the transform/opacity write) read jsDriven: false, a silent false negative
+// reported as fact.
+assert.ok(/observe\(el,\s*\{\s*attributes:\s*true,\s*attributeFilter:\s*\["style"\],\s*subtree:\s*true\s*\}\)/.test(studyMotionSrc),
+  "tier 3's observer watches the element's subtree too, not just the element itself");
+
+// Minor 7 is checked earlier, alongside the loader/core file-list sync check.
+
+// Minor 8: lastEl must be reset on BOTH pin and unpin, or the panel/highlight
+// can show a stale element until the cursor reaches a THIRD one after an
+// pin -> unpin sequence.
+var studyOnClickFixed = extractFunction(studySrc, "onClick");
+assert.ok(studyOnClickFixed.length > 0, "found study.js's onClick to inspect");
+var lastElResets = studyOnClickFixed.match(/lastEl\s*=\s*null/g) || [];
+assert.ok(lastElResets.length >= 2, "study.js's onClick resets lastEl on both the pin and the unpin branch, found " + lastElResets.length);
+
+// Minor 10: exciseFunction (used above) needed the same sanity floor
+// extractFunction already has — checked earlier, right after its definition.
+
+// Minor 11: tier4.candidateScripts included CSS/font/image URLs that tier 4's
+// JS-only sourceMappingURL regex can never match — a wasted fetch on every
+// one, and a misleading field name. Filtered to .js before tier4 uses them.
+assert.ok(/function filterJsUrls/.test(studyMotionSrc), "study-motion.js filters candidate scripts to .js");
+assert.ok(/candidateScripts:\s*jsCandidates/.test(studyMotionSrc), "tier4.candidateScripts is the filtered .js list, not the raw fingerprint");
+assert.ok(/probeSourceMaps\(jsCandidates,/.test(studyMotionSrc), "tier 4's source-map probe fetches only the filtered .js candidates");
+
+// Minor 12: the shortcut guide's "Click" row was hardcoded to point-mode's
+// "Leave a comment" even while the pill read Study (where a click pins a
+// readout) or Measure (where clicks pass straight through). ui.js must not
+// branch on mode itself (existing invariant, asserted above) — the fix drives
+// the text from index.js, which already owns the pill label.
+assert.ok(/setClickHint/.test(uiSrc), "ui.js exposes a setter for the guide's Click-row text");
+assert.ok(!/mode\s*[!=]==?\s*["'](?:on|study|measure|off)["']/.test(uiSrc), "ui.js still does not branch on mode (Minor 12 must not violate this)");
+assert.ok(/setClickHint/.test(indexSrc), "index.js drives the Click-row text, keeping mode logic out of ui.js");
 
 console.log("overlay.test: ok");

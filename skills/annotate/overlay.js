@@ -27,6 +27,12 @@
     if (typeof window !== "undefined" && window.__annotator) return Promise.resolve("already-running");
     var base = String(baseUrl).replace(/\/?$/, "/");
     try { localStorage.setItem("__ann_boot_url", base); } catch (e) {}
+    // In-memory fallback for study-motion.js's fingerprint filter: a sandboxed
+    // iframe or storage-blocked context makes localStorage throw on BOTH the
+    // write above and the read there, so bootBase would be null, isOwnModuleUrl
+    // would exclude nothing, and Study would report its own study-motion.js as
+    // a detected motion library on every such page.
+    window.__annBootBase = base;
     return FILES.reduce(function (chain, f) {
       return chain.then(function () {
         return fetch(base + f, { cache: "no-store" })
