@@ -1,6 +1,6 @@
 ---
 name: annotate
-description: Point-and-comment on the live local app. Invoked as /annotate [url]. Opens the Playwright browser to the local app, injects an inspect-element-style overlay so Matt can hover, click, and leave comments (each auto-screenshotted), then watches for those comments and fixes them. Dev tool only — never shipped, exempt from mobile-parity.
+description: Point-and-comment on the live local app, plus a read-only Study mode that reverse-engineers any site's design system. Invoked as /annotate [url]. Opens the Playwright browser, injects an inspect-element-style overlay so Matt can hover, click, and leave comments (each auto-screenshotted), then watches for those comments and fixes them. Study mode (the 4th pill state) works against any URL, not just the local app, and never modifies the page it inspects. Dev tool only — never shipped, exempt from mobile-parity.
 ---
 
 # /annotate — point-and-comment on the live app
@@ -13,7 +13,10 @@ rather than pasted into your context.
 ## Setup
 
 1. **URL**: use the `[url]` arg, else `http://localhost:3000`. Assume the dev server
-   is already up (Matt keeps `:3000` running — never kill it). If it's not, ask.
+   is already up (Matt keeps `:3000` running — never kill it). If it's not, ask. **If the
+   `[url]` arg is a remote address** (e.g. `/annotate https://someothersite.com`), there is
+   no local dev server to wait for — that's a normal invocation, most often heading for
+   Study mode (see below), which is built to work against any site, not just the local app.
 2. **Start the overlay server** (skip if one from earlier in this session is still up —
    reuse it, don't start a second one). `serve.cjs` never exits on its own (it just
    `listen()`s), so it **must be run in the background**, not as a normal foreground Bash
@@ -40,15 +43,19 @@ rather than pasted into your context.
      return await window.__annotatorBoot("<server url from step 2>");
    }
    ```
-   The loader fetches the six implementation modules (`core.js`, `palette.js`, `ui.js`,
-   `point.js`, `measure.js`, `index.js`) from that server and evals each in order — this
+   The loader fetches the eight implementation modules (`core.js`, `palette.js`, `ui.js`,
+   `point.js`, `measure.js`, `study-motion.js`, `study.js`, `index.js`) from that server
+   and evals each in order — this
    is what replaces pasting the old 628-line single-file implementation into
    `browser_evaluate` on every run (~24k tokens each time). Idempotent: if the overlay
    is already running, `__annotatorBoot` resolves `"already-running"` and touches nothing.
 5. **Tell Matt**, briefly: a pill is bottom-right, **starts OFF** (browse freely).
-   Flip it **ON** (click the pill or press **Alt+A**) to comment; press again for
-   **measure** mode (records timings, clicks pass straight through — see below); again to
-   return to off. In annotate mode, hover highlights the
+   The pill cycles **off → on → measure → study → off** (click it, or press **Alt+A**
+   repeatedly). Flip it **ON** to comment; press again for **measure** mode (records
+   timings, clicks pass straight through — see below); press again for **study** mode
+   (reverse-engineers styles/design-system/motion on whatever's under the cursor,
+   read-only, works on any site — see the Study section below); again to return to
+   off. In annotate (**on**) mode, hover highlights the
    element **and shows an inspector card** (computed font/size/color/padding/etc.), click
    opens a comment box, **⌘/Ctrl+Enter** or **Save** submits. In the box he can **⌘V a
    screenshot** (⌃⌘⇧4 copies one straight to the clipboard) or **drag an image file onto
@@ -59,7 +66,7 @@ rather than pasted into your context.
 
 ## Measure mode
 
-The pill cycles **off → annotate → measure → off** (click, or Alt+A). In measure mode the
+The pill cycles **off → on → measure → study → off** (click, or Alt+A). In measure mode the
 overlay records and **does not touch clicks** — Matt uses the app completely normally while
 it watches. The pill shows the running entry count.
 
@@ -90,6 +97,106 @@ for the `localStorage` quota); the loop drains continuously so at most ~25s is l
 flips it back on. `layout-shift` and `longtask` are Chromium-only, which the Playwright
 browser is. The first page load is not captured — recording starts when the mode is switched on.
 
+## Study mode
+
+The pill's 4th state. **This is the headline capability of the whole tool — Study works
+against any URL, not just the local app you're building.** `/annotate https://someothersite.com`
+is a completely valid invocation: point Study at a competitor's site, a piece of design
+inspiration, anything on the public web, and take its design system apart.
+
+Unlike annotate mode, Study **does not make the page inert** — only `click` is intercepted
+(to pin the readout instead of following the link), and **holding Shift bypasses even that**.
+Everything else (scrolling, hover states, `:hover`/`:focus` CSS) behaves normally, and
+clicking a link navigates the page, because studying a site means moving through it, not
+being trapped on one screen. Study **never writes to the page it inspects** — every read
+goes through `getComputedStyle`/`getBoundingClientRect`/`getAnimations`, and its own UI
+(the readout panel) is chrome appended fresh to `<body>`, same as the highlight box and
+comment pins in the other modes.
+
+**Driving it:**
+1. Cycle the pill to **study** (Setup step 5), or ask Matt to.
+2. Hover previews the readout live; **click an element to pin it** — the panel then stays
+   put while the mouse moves elsewhere, so you can pull the readout after moving on. Either
+   Matt clicks the target himself, or you drive it with `browser_click`.
+3. Pull the pinned element's full readout with a `browser_evaluate` that **awaits the
+   Promise**:
+   ```
+   async () => await window.__annotatorStudyTake()
+   ```
+   Pull the whole-page design system (no pin needed) with a second, plain call:
+   ```
+   () => window.__annotatorStudyPage()
+   ```
+
+**`window.__annotatorStudyTake()` returns a Promise — this is easy to miss and a call that
+doesn't `await` it gets back a Promise object, not data, and will misreport "no motion" or
+crash on a `.then` that was never chained.** It resolves once the ~1s motion sample
+completes (a 3s ceiling means it can never hang the tool call — if the sample hasn't
+settled by then, it hands back whatever it has), and in practice resolves in about a
+second. It resolves `null` if nothing is pinned yet.
+
+What it resolves with:
+```
+{
+  element: { tag, selector, box, styles, nonDefault, matchedRules, tailwind },
+  motion:  { tier1, tier2, tier3, tier4, confidence }
+}
+```
+`element.nonDefault` is `styles` minus the tag's own browser defaults (so `position: static`
+on every div doesn't bury the one that says `sticky`); `element.matchedRules` is the actual
+CSS rules that matched, each with its `@media`/`@supports`/`@layer` context if nested;
+`element.tailwind` is a best-effort Tailwind-class translation of the computed styles.
+
+`window.__annotatorStudyPage()` is **synchronous** (no `await` needed) — the whole-page
+design-system sweep:
+```
+{ palette, typeScale, weights, fonts, spacing, radii, shadows, customProps, elementsScanned, truncated }
+```
+`palette`, `typeScale`, `weights`, `fonts`, `radii`, and `shadows` are frequency-ranked
+(`[{ value, count }]`, most-used first) — a page's real palette is the handful of colors
+used hundreds of times, not the one-off banner color. `spacing` carries a grid verdict
+(`{ base, values, onGrid }` — e.g. `onGrid: true, base: 4` means "these are all multiples of
+4"). `customProps` is the site's own design tokens (its CSS custom properties), bucketed
+**by the selector they were declared under** — a plain `:root` set and a themed override
+(`:root[data-theme="dark"]`, `.dark`) land in separate buckets, never merged, so you can
+report the light and dark token sets as what they actually are.
+
+**The four motion tiers — report the tier, never flatten the confidence.** `motion`
+carries `tier1` through `tier4` plus a `confidence` summary
+(`{ tiersWithData: [...], summary: "..." }`) that already names which tiers actually fired —
+lean on it rather than re-deriving confidence yourself. **Never present a tier-3 inference
+as a tier-1 fact** — "this element animates via `transform`, easing `cubic-bezier(...)`" is
+only true if it came from tier 1; a tier-3 finding is "something JS-driven is writing to
+this element's style ~30 times a second," not a transition curve, and must be worded that
+way.
+
+| Tier | What it covers | Confidence |
+|------|-----------------|------------|
+| **1 — `getAnimations()`** | Every CSS transition, CSS animation, and Web Animations API animation, with real keyframes and timing. A browser standard since 2020. | **Complete, not approximate.** If tier 1 found it, report it as fact. |
+| **2 — library reachable via a global** | GSAP (the jackpot): every tween and every ScrollTrigger binding — trigger, start, end, progress. Lottie: the animation's JSON URL (the whole animation *is* that file). Three.js: version + canvas count. | **Near-complete**, but only for libraries that expose a global. |
+| **3 — detection without detail** | Bundled libraries with no global (Framer Motion never had one) fingerprinted from network entries, plus proof of JS-driven motion from a ~1s sample of the frame loop correlated against style mutations. | **Detection, not detail.** You learn *that* something animates and roughly how, never the actual code or curve. |
+| **4 — source maps** | Whether a source map exists for a fingerprinted script, and its URL. | **The jackpot when present** — but Study reports only that the map exists and where; **it does not fetch or parse it.** Never imply the original source is in hand — only that it's reachable. |
+
+**Honest limits — report these, don't paper over them:**
+- **Illustrations/images** yield dimensions, URL, and placement — never the artwork itself.
+  That's an asset, not a style; no inspector reconstructs it.
+- **Content-Security-Policy is an open problem, not a solved one.** The overlay boots via
+  an in-page `eval` plus a `fetch` back to `127.0.0.1`; a page whose `script-src` lacks
+  `'unsafe-eval'`, or whose `connect-src` blocks localhost, refuses the overlay entirely —
+  Study can't run there at all. This matters more for Study than any other mode, because
+  the sites most worth studying are exactly the ones most likely to ship a strict CSP. If
+  the overlay fails to boot on a target site, say so plainly rather than guessing why.
+- **First-paint-only effects are missed** — the overlay injects after the page has already
+  loaded, so anything that only ever runs once, on initial paint, isn't there to observe.
+- **Shadow DOM isn't walked.** Elements inside a shadow root need separate handling that
+  doesn't exist yet — Study's readout and page sweep both only see light-DOM elements.
+- **The page sweep caps at 8000 elements.** `truncated: true` means it hit the cap — pass
+  that fact on to Matt rather than presenting a partial design system as if it were the
+  whole one.
+- **GSAP's per-tween accessors (`.targets()`, `.vars`) are probed with `typeof`, never
+  assumed.** An older GSAP version without them yields a tween count with less per-tween
+  detail — report that honestly as "less detail available," not as "no animation found."
+
 ## Watch loop
 
 Repeat until Matt says done (or the browser closes / evaluate errors):
@@ -111,7 +218,7 @@ Repeat until Matt says done (or the browser closes / evaluate errors):
    A page reload wipes all page JS state, including `__annotatorBoot` itself — so the
    self-heal has to re-embed the loader (the same ~37 lines from Setup step 4, not the
    whole implementation) *before* it can call it. `__annotatorBoot` then re-fetches the
-   six modules from the server you started in Setup step 2 (still running — it's a plain
+   eight modules from the server you started in Setup step 2 (still running — it's a plain
    Node process, not tied to the page) and re-boots against the URL the overlay saved to
    `localStorage["__ann_boot_url"]` on first boot, restoring every annotation and its
    status from the same storage. Playwright awaits the promise; it returns the new
