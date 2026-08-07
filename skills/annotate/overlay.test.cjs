@@ -771,8 +771,16 @@ var favouriteBody = extractFunction(studySrc, "favourite");
 var takeFavouriteBody = extractFunction(studySrc, "takeFavourite");
 assert.ok(favouriteBody.length > 0, "found study.js's favourite() to inspect");
 assert.ok(takeFavouriteBody.length > 0, "found study.js's takeFavourite() to inspect");
-assert.ok(/location\.href/.test(favouriteBody) || /location\.href/.test(takeFavouriteBody),
-  "url is captured from location.href inside the module, not passed in");
+// Split into two independent assertions (not one OR) — an OR is satisfied by
+// either side alone, so it would stay green if a future change dropped
+// location.href from JUST takeFavourite()'s fallback, which is the path taken
+// every time a user pins an element and calls takeFavourite() without first
+// clicking Save favourite. That path losing url silently is exactly the
+// failure this field's "never optional" requirement exists to prevent.
+assert.ok(/location\.href/.test(favouriteBody),
+  "favourite() captures url from location.href inside the module, not passed in");
+assert.ok(/location\.href/.test(takeFavouriteBody),
+  "takeFavourite()'s no-favourite-yet fallback captures url from location.href inside the module, not passed in");
 
 // takeFavourite() must REUSE take()'s existing Promise/ceiling machinery, not
 // re-implement it — a fresh `new Promise`/`setTimeout` here would mean the
