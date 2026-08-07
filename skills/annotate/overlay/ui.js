@@ -286,6 +286,59 @@
       if (favouriteHandler) favouriteHandler(favNote.value, favTags.value);
     });
 
+    // ---- compare panel: save a baseline, then diff a re-run against it ----
+    // Built generically like everything else here. index.js owns what the
+    // buttons MEAN; this file owns only that they exist and are clickable.
+    var comparePanel = document.createElement("div"); comparePanel.className = "__ann-ui";
+    Object.assign(comparePanel.style, { display: "flex", flexDirection: "column", gap: "8px", width: "430px", font: "12px " + SANS });
+    var cmpBar = document.createElement("div");
+    Object.assign(cmpBar.style, { display: "flex", alignItems: "center", gap: "8px" });
+    function cmpButton(act, label) {
+      var b = document.createElement("button");
+      b.textContent = label;
+      b.setAttribute("data-ann-act", act);
+      Object.assign(b.style, { padding: "6px 10px", borderRadius: "6px", border: "1px solid " + pal.border, background: pal.surface2, color: pal.text, font: "600 12px " + SANS, cursor: "pointer", whiteSpace: "nowrap" });
+      return b;
+    }
+    var cmpSave = cmpButton("cmp-save", "Save baseline");
+    var cmpRun = cmpButton("cmp-run", "Compare");
+    var cmpFilterLabel = document.createElement("label");
+    Object.assign(cmpFilterLabel.style, { display: "flex", alignItems: "center", gap: "5px", color: pal.text2, cursor: "pointer", marginLeft: "auto", whiteSpace: "nowrap" });
+    var cmpFilter = document.createElement("input");
+    cmpFilter.type = "checkbox";
+    cmpFilter.setAttribute("data-ann-act", "cmp-filter");
+    var cmpFilterText = document.createElement("span"); cmpFilterText.textContent = "regressions only";
+    cmpFilterLabel.append(cmpFilter, cmpFilterText);
+    cmpBar.append(cmpSave, cmpRun, cmpFilterLabel);
+    var cmpStatus = document.createElement("div");
+    Object.assign(cmpStatus.style, { color: pal.text3, font: "11px " + SANS });
+    var cmpRows = document.createElement("div");
+    Object.assign(cmpRows.style, { display: "none", flexDirection: "column", gap: "2px", maxHeight: "190px", overflowY: "auto" });
+    comparePanel.append(cmpBar, cmpStatus, cmpRows);
+
+    function setCompareStatus(text) { cmpStatus.textContent = text || ""; }
+    function isRegressionsOnly() { return !!cmpFilter.checked; }
+    // Rows arrive as plain {label, detail, tone} — no verdict enum, no delta
+    // maths, nothing this file could come to depend on.
+    function setCompareRows(rows) {
+      cmpRows.textContent = "";
+      if (!rows || !rows.length) { cmpRows.style.display = "none"; return; }
+      var TONE = { bad: "#ff6f5e", good: "#3fbf7f", flat: pal.text3 };
+      rows.forEach(function (r) {
+        var row = document.createElement("div");
+        Object.assign(row.style, { display: "flex", gap: "10px", alignItems: "baseline", padding: "3px 6px", borderRadius: "5px", background: pal.surface2 });
+        var d = document.createElement("span");
+        d.textContent = r.detail;
+        Object.assign(d.style, { flex: "none", minWidth: "112px", color: TONE[r.tone] || pal.text2, font: "600 11px " + MONO });
+        var l = document.createElement("span");
+        l.textContent = r.label;
+        Object.assign(l.style, { color: pal.text2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
+        row.append(d, l);
+        cmpRows.appendChild(row);
+      });
+      cmpRows.style.display = "flex";
+    }
+
     // A plain line of text for a mode whose row 2 is just a status ("Passes
     // through (recording) · 41 entries"). Saves index.js hand-building a node.
     function toolsText(text) {
@@ -309,6 +362,11 @@
       setModeTools: setModeTools,
       toolsText: toolsText,
       favPanel: favPanel,
+      comparePanel: comparePanel,
+      setCompareStatus: setCompareStatus,
+      setCompareRows: setCompareRows,
+      isRegressionsOnly: isRegressionsOnly,
+      onAct: onAct,
       setQueueCount: setQueueCount,
       setQueueItems: setQueueItems,
       queuePanel: queuePanel,

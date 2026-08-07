@@ -62,8 +62,8 @@ rather than pasted into your context.
      it, ✕ removes it. **Hold Shift to "peek"** — click through for one action (open a
      dropdown/modal) without leaving the mode.
    - **Measure** — records timings, clicks pass straight through (see below).
-   - **Compare** — **greyed out**; it is spec Phase 3 and not built. It ships visible on
-     purpose so the top row never has to grow a button and move the others.
+   - **Compare** — baseline vs re-run. Save a run, let the agent work, run the same journey
+     again, see what moved. See the Compare section below.
    - **Study** — reverse-engineers styles/design-system/motion, read-only, works on any
      site. Row 2 holds the note/tags/★ Save favourite inputs.
 
@@ -430,6 +430,64 @@ typed by accident.
 Tailwind config that mirrors the doc), **say so before you write**, and change them in the
 same commit. Promoting a token and leaving its test red hands him a broken suite for a
 change he approved.
+
+## Compare mode
+
+**Prove the fix worked.** Record a journey in Measure, save it as a baseline, let the agent
+change something, run the *same* journey again, and read the delta. This exists because of two
+recorded incidents in this project: measure mode's first version reported `servedFromCache:
+true` for every navigation — the exact opposite of the truth — with all sixteen of its unit
+tests passing; and a headline performance finding once evaporated because it had been measured
+on the dev server. Before-and-after numbers are how that stops happening.
+
+**The loop:**
+1. **Measure** — drive the journey.
+2. **Compare → Save baseline.** The baseline is written to `localStorage`, deliberately: the
+   agent works in between, and editing a component the page uses triggers an HMR reload that
+   would take an in-memory baseline with it.
+3. Make the change.
+4. **Measure** again — **selecting Measure resets the run**, so drive the same journey cleanly.
+5. **Compare → Compare.** Tick **regressions only** to see just what got worse.
+
+**From the agent side:**
+```
+() => window.__annotatorCompareSaveBaseline()   // { ok, entries } — after driving in Measure
+() => window.__annotatorCompareTake()           // the full result
+() => window.__annotatorCompareClearBaseline()
+```
+All three are **synchronous** — there is no sampling here, only arithmetic over entries already
+recorded. `CompareTake` returns `{ rows, regressions, truncated, dropped, thresholds }`, or
+`{ error: "no-baseline" }`. **It deliberately returns the whole result rather than just the
+regressions**: a caller that only ever sees regressions cannot tell *"nothing got worse"* from
+*"nothing was measured in both runs"*, and those need completely different answers to Matt.
+
+**Each row is `{ key, kind, before, after, deltaMs, deltaPct, verdict, thin }`:**
+
+| verdict | means |
+|---|---|
+| `slower` / `faster` | cleared **both** noise floors — at least 5ms **and** at least 10% |
+| `same` | moved, but not enough to be real |
+| `added` | only in the new run. Not a regression — you cannot regress against nothing |
+| `gone` | only in the baseline. Not an improvement either |
+
+**Report `thin: true` rows as anecdotes, not measurements.** It means one side had a single
+sample. "38% faster" off one observation each is exactly the shape of the finding that
+evaporated on a prod build — say "one sample each way" out loud rather than quoting the
+percentage as if it were stable.
+
+**`truncated: true` means entries were dropped** (the 500-entry cap) and the two runs are not
+comparable like for like. Pass that on; never present a truncated comparison as a complete one.
+
+**How rows are paired.** Entries match across runs on `kind` plus a normalised path — origin,
+query and hash stripped, because Next appends a fresh `?_rsc=<hash>` to every navigation and
+leaving it on would mean *nothing* ever matched and every row read `added`. Navigations key on
+the route **pair** (`/ -> /tasks`); layout shifts and long tasks have no identity of their own,
+so they aggregate by kind.
+
+**Ceilings.** Two runs of one journey is not a benchmark — it is a smoke test with numbers.
+It catches a 30ms action becoming 300ms, which is the case it was built for; it will not settle
+a 5% argument. And measure mode's own ceilings all apply (browser-side only, cross-origin
+timings opaque, Next-specific navigation detection).
 
 ## Watch loop
 

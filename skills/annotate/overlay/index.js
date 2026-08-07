@@ -60,13 +60,10 @@
     // other three modes start swallowing clicks, so the LABEL changes here and
     // the key does not.
     //
-    // Compare ships disabled rather than absent: Layout B's top row is meant to
-    // never change, and a row that grows a fifth button later moves everything
-    // the user has learned to aim at. It is spec §8 Phase 3.
     var MODES = [
       { key: "on", label: "Point", title: "Comment on your own app" },
       { key: "measure", label: "Measure", title: "Record real performance while you drive" },
-      { key: "compare", label: "Compare", title: "Baseline vs re-run — not built yet (Phase 3)", disabled: true },
+      { key: "compare", label: "Compare", title: "Baseline vs re-run — prove the fix worked" },
       { key: "study", label: "Study", title: "Take apart any site's design" }
     ];
     // Alt+A's cycle. Derived from MODES rather than written out, so a mode that
@@ -90,6 +87,10 @@
       } else if (m === "study") {
         uiHandles.setClickHint("Pin the readout");
         uiHandles.setModeTools(uiHandles.favPanel);
+      } else if (m === "compare") {
+        uiHandles.setClickHint("Passes through");
+        uiHandles.setModeTools(uiHandles.comparePanel);
+        uiHandles.setCompareStatus(compareStatusLine());
       } else if (m === "on") {
         uiHandles.setClickHint("Leave a comment");
         uiHandles.setModeTools(uiHandles.toolsText("Click an element to comment · hold Shift to click through"));
@@ -115,6 +116,69 @@
     function selectMode(key) { setMode(state.mode === key ? "off" : key); }
     function toggle() { setMode(core.nextMode(state.mode, CYCLE_KEYS)); }
     uiHandles.setModes(MODES, selectMode);
+
+    // ---- Compare: baseline vs re-run ----
+    // The baseline lives in localStorage, not memory, because the whole point is
+    // that the agent does a chunk of work in between — and editing a component
+    // the page uses triggers an HMR reload, which would take an in-memory
+    // baseline with it and silently leave nothing to compare against.
+    var BASELINE_KEY = "__ann_baseline";
+    function loadBaseline() {
+      try { var raw = localStorage.getItem(BASELINE_KEY); return raw ? JSON.parse(raw) : null; } catch (e) { return null; }
+    }
+    function compareStatusLine() {
+      var b = loadBaseline();
+      var live = measureMode.sessionTake().length;
+      if (!b) return "No baseline yet. Record in Measure, then come back and save one. (" + live + " entries recorded now)";
+      return "Baseline: " + b.entries.length + " entries, saved " + b.savedAt + " on " + b.url + " · current run: " + live + " entries";
+    }
+    // A row the user can read at a glance. The maths stays in core; this only
+    // decides the words. "thin" is carried through deliberately — a one-sample
+    // result that reads like a measurement is exactly the mistake that made a
+    // headline performance finding evaporate once.
+    function compareRowText(r) {
+      var name = r.key;
+      if (r.verdict === "added") return { label: name, detail: "new", tone: "flat" };
+      if (r.verdict === "gone") return { label: name, detail: "gone", tone: "flat" };
+      var ms = Math.round(r.deltaMs);
+      var pct = r.deltaPct === null ? "" : " (" + (r.deltaPct > 0 ? "+" : "") + Math.round(r.deltaPct * 100) + "%)";
+      if (r.verdict === "same") return { label: name, detail: "~ unchanged", tone: "flat" };
+      var arrow = r.verdict === "slower" ? "▲ +" : "▼ ";
+      return {
+        label: name + (r.thin ? "  · one sample" : ""),
+        detail: arrow + ms + "ms" + pct,
+        tone: r.verdict === "slower" ? "bad" : "good"
+      };
+    }
+    function runCompare() {
+      var b = loadBaseline();
+      if (!b) { uiHandles.setCompareStatus("Nothing to compare against — save a baseline first."); uiHandles.setCompareRows([]); return null; }
+      var current = measureMode.sessionTake();
+      var result = core.compareRuns(b.entries, current);
+      var rows = uiHandles.isRegressionsOnly() ? result.regressions : result.rows;
+      uiHandles.setCompareRows(rows.map(compareRowText));
+      var head = result.rows.length
+        ? result.regressions.length + " slower, " + result.rows.filter(function (r) { return r.verdict === "faster"; }).length + " faster, of " + result.rows.length
+        : "Nothing measured in both runs — record the same journey again before comparing";
+      // Truncation must never read as a complete comparison.
+      if (result.truncated) head += " · TRUNCATED, " + (result.dropped.before + result.dropped.after) + " entries were dropped";
+      uiHandles.setCompareStatus(head);
+      return result;
+    }
+    uiHandles.onAct("cmp-save", function () {
+      var entries = measureMode.sessionTake();
+      var rec = { savedAt: new Date().toISOString().slice(11, 19), url: location.pathname, entries: entries };
+      try { localStorage.setItem(BASELINE_KEY, JSON.stringify(rec)); } catch (e) {
+        uiHandles.setCompareStatus("Could not save the baseline — storage refused it (" + (e && e.name) + ")");
+        return;
+      }
+      uiHandles.setCompareRows([]);
+      uiHandles.setCompareStatus(entries.length
+        ? "Baseline saved: " + entries.length + " entries. Now let the agent work, re-run the same journey in Measure, and press Compare."
+        : "Baseline saved, but it is EMPTY — nothing was recorded. Switch to Measure, drive the journey, then save again.");
+    });
+    uiHandles.onAct("cmp-run", runCompare);
+    uiHandles.onAct("cmp-filter", function () { if (loadBaseline()) runCompare(); });
 
     // ui.js only knows it collected a note and a comma-separated tags string —
     // it has no idea a "study mode" or a "favourite" concept exists. index.js
@@ -158,6 +222,31 @@
     // take() under the hood, so this can never hand back a permanent
     // {status:"sampling"} placeholder either.
     window.__annotatorStudyFavourite = function () { return studyMode.takeFavourite(); };
+
+    // Compare's agent-facing entry points. Synchronous — there is no sampling
+    // here, only arithmetic over entries already recorded.
+    // __annotatorCompareTake() returns the FULL result (rows, regressions,
+    // truncated, dropped, thresholds), never just the regressions: a caller that
+    // only ever sees regressions cannot tell "nothing got worse" apart from
+    // "nothing was measured in both runs", and those need different answers.
+    window.__annotatorCompareTake = function () {
+      var b = loadBaseline();
+      if (!b) return { error: "no-baseline", rows: [], regressions: [] };
+      return core.compareRuns(b.entries, measureMode.sessionTake());
+    };
+    // Saving and clearing from the agent side, so a journey can be driven with
+    // browser_click and baselined without anyone touching the toolbar.
+    window.__annotatorCompareSaveBaseline = function () {
+      var entries = measureMode.sessionTake();
+      try { localStorage.setItem(BASELINE_KEY, JSON.stringify({ savedAt: new Date().toISOString().slice(11, 19), url: location.pathname, entries: entries })); } catch (e) { return { ok: false, error: String(e && e.name) }; }
+      updateToolbar();
+      return { ok: true, entries: entries.length };
+    };
+    window.__annotatorCompareClearBaseline = function () {
+      try { localStorage.removeItem(BASELINE_KEY); } catch (e) {}
+      updateToolbar();
+      return { ok: true };
+    };
 
     updateToolbar();
     console.log("[annotate] overlay ready — Alt+A toggle · hover = inspect · Shift = click-through · ⌘V attaches an image · ? = shortcuts");
