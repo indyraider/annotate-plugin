@@ -145,7 +145,7 @@ const paletteKeys = ["elevated", "surface", "surface2", "hover", "border", "hair
 for (const k of paletteKeys) {
   assert.ok(new RegExp(k + "\\s*:").test(paletteSrc), "palette.build() return must include key " + k);
 }
-const uiKeys = ["showHighlight", "hideHighlight", "showInspector", "hideInspector", "bar", "pill", "guide", "help", "setPillLabel", "isOurs"];
+const uiKeys = ["showHighlight", "hideHighlight", "showInspector", "hideInspector", "bar", "toolbar", "guide", "help", "setModes", "setActiveMode", "setModeTools", "isOurs"];
 for (const k of uiKeys) {
   assert.ok(new RegExp(k + "\\s*:").test(uiSrc), "ui.create() handles must include key " + k);
 }
@@ -203,10 +203,32 @@ assert.ok(/25000/.test(indexSrc), "index.js keeps the 25s long-poll ceiling");
 // The idempotent re-inject guard.
 assert.ok(/if\s*\(\s*window\.__annotator\s*\)\s*return/.test(indexSrc), "index.js keeps the re-inject guard");
 
-// The mode cycle must remain off -> on -> measure -> study -> off (Task 6 added the
-// fourth mode). Guarded on the source since a rewritten cascade could silently drop
-// straight back to off from measure instead of reaching study.
-assert.ok(/"measure"\s*\?\s*"study"/.test(indexSrc) || /"study"\s*:\s*"off"/.test(indexSrc), "toggle must cycle through study before off");
+// The mode cycle must remain off -> on -> measure -> study -> off. This used to
+// be a grep for a ternary cascade, which said nothing about what the cascade
+// DID and went stale the moment the toolbar replaced it. It is now behavioural:
+// core.nextMode is pure, so the actual rotation can be walked.
+var CYCLE_KEYS = ["on", "measure", "study"];
+assert.strictEqual(core.nextMode("off", CYCLE_KEYS), "on", "off -> on");
+assert.strictEqual(core.nextMode("on", CYCLE_KEYS), "measure", "on -> measure");
+assert.strictEqual(core.nextMode("measure", CYCLE_KEYS), "study", "measure -> study, never straight back to off");
+assert.strictEqual(core.nextMode("study", CYCLE_KEYS), "off", "study -> off closes the loop");
+
+// A mode that ships disabled is absent from the keys, so it can never be landed
+// on — Compare is greyed out in the toolbar and must not be a dead stop where
+// Alt+A appears to do nothing.
+assert.strictEqual(CYCLE_KEYS.indexOf("compare"), -1, "a disabled mode contributes no cycle key");
+
+// An unrecognised mode has to resolve to something, and "off" is the safe
+// direction: the worst case is one extra keypress, versus a rotation that gets
+// stuck somewhere the page is not usable.
+assert.strictEqual(core.nextMode("compare", CYCLE_KEYS), "off", "an unknown mode falls back to off, not to undefined");
+assert.strictEqual(core.nextMode(undefined, CYCLE_KEYS), "off", "so does no mode at all");
+
+// index.js must derive the cycle from its own mode list rather than hard-coding
+// it a second time — two lists that can disagree is how Compare would end up in
+// the rotation while greyed out in the toolbar.
+assert.ok(/CYCLE_KEYS\s*=\s*MODES\.filter/.test(indexSrc), "index.js derives the cycle from MODES, filtered by disabled");
+assert.ok(/core\.nextMode\(/.test(indexSrc), "index.js rotates via core.nextMode rather than its own copy");
 
 // Smoke-require index.js, mirroring the other five modules — a broken
 // relative path or a missing export fails here, not on first injection.
@@ -522,7 +544,23 @@ function extractFunction(src, name) {
 }
 var studyOnClick = extractFunction(studySrc, "onClick");
 assert.ok(studyOnClick.length > 0, "found study.js's onClick to inspect");
-assert.ok(!/preventDefault|stopPropagation/.test(studyOnClick), "study.js's onClick must never block or swallow the click — a plain link click must still navigate");
+// NARROWED 2026-08-07, deliberately, and this is not a guard weakened to make a
+// test pass. The original rule — onClick must contain no preventDefault or
+// stopPropagation at all — existed because the first version ate every link
+// click and made Study a trap you could not browse out of. That requirement
+// still holds in full for a PLAIN click, and is asserted as such below and in
+// the Alt+click block. What changed is a product decision: Alt+click now pins a
+// link without following it, because otherwise a CTA cannot be captured at all.
+// One held key is the only exception, and the plain path is checked separately
+// rather than by a blanket grep that can no longer distinguish the two.
+assert.ok(/if \(e\.altKey\)/.test(studyOnClick),
+  "the ONLY event-blocking branch in onClick is the Alt+click one");
+// Cut the Alt branch out by its braces and check what is LEFT. An earlier
+// version of this split on the "if (e.altKey)" text, which left the branch's own
+// body in the remainder and made the assertion fail against correct code.
+var plainOnly = studyOnClick.replace(/if \(e\.altKey\) \{[^}]*\}/, "");
+assert.ok(!/preventDefault|stopPropagation/.test(plainOnly),
+  "study.js's onClick must never block or swallow a PLAIN click — a plain link click must still navigate");
 
 // study.js's readMotion wrapper must forward onUpdate to study-motion.js's real
 // readMotion, not drop it — a dropped onUpdate makes take()'s early-resolve path
@@ -805,12 +843,12 @@ assert.ok(/window\.__annotatorStudyFavourite\s*=\s*function\s*\(\s*\)\s*{\s*retu
 // already re-run against this same uiSrc, so a violation here fails them too;
 // these two additionally prove the new handles are real, not just absent
 // mode-checks.
-assert.ok(/setFavouriteVisible\s*:/.test(uiSrc), "ui.js exposes setFavouriteVisible, mirroring setClickHint's show/hide-from-outside pattern");
+assert.ok(/favPanel\s*:/.test(uiSrc), "ui.js exposes favPanel as a node index.js can hand to setModeTools, not as something ui.js places itself");
 assert.ok(/onFavouriteSave\s*:/.test(uiSrc), "ui.js exposes onFavouriteSave so index.js can wire the note/tag submit without ui.js knowing about study mode");
 
 // index.js is the one that decides visibility and wires the callback through
 // to studyMode.favourite() — ui.js must never call studyMode itself.
-assert.ok(/setFavouriteVisible/.test(indexSrc), "index.js drives favourite-panel visibility, keeping mode logic out of ui.js");
+assert.ok(/setModeTools\(uiHandles\.favPanel\)/.test(indexSrc), "index.js is the one that puts the favourite panel into row 2, keeping mode logic out of ui.js");
 assert.ok(/onFavouriteSave/.test(indexSrc), "index.js registers the favourite-save handler");
 assert.ok(/studyMode\.favourite\(/.test(indexSrc), "index.js's favourite-save handler calls studyMode.favourite()");
 assert.ok(!/studyMode\.favourite/.test(uiSrc), "ui.js never calls studyMode directly");
@@ -827,10 +865,10 @@ assert.strictEqual(core.classifyValue("16px", [6, 10, 16]).verdict, "fits",
   "'16px' matches the token 16 exactly");
 // The unit may be on the SCALE side instead. This scale is deliberately narrow
 // (16/18): a bare Number() on the nearest token yields NaN, which falls through
-// to the scale-RANGE fallback, and a range of 2 makes 25 look far away — "new".
-// A wider scale would be classified correctly by the fallback anyway and so
-// would prove nothing about the line under test.
-assert.strictEqual(core.classifyValue(25, ["16px", "18px"]).verdict, "conflict",
+// to the scale-RANGE fallback, and a range of 2 makes even 19 look far away —
+// "new". A wider scale would be classified correctly by the fallback anyway and
+// so would prove nothing about the line under test.
+assert.strictEqual(core.classifyValue(19, ["16px", "18px"]).verdict, "conflict",
   "a px-suffixed SCALE is read numerically — not left as NaN for the range fallback to paper over");
 assert.strictEqual(core.classifyValue("1.5rem", ["1rem", "1.25rem", "2rem"]).verdict, "conflict",
   "rem scales compare on their own terms, no px assumption");
@@ -858,6 +896,102 @@ assert.strictEqual(core.classifyValue("0 1px 2px black", ["0 1px 2px black", "0 
 // with or without the guard and would prove nothing.
 assert.strictEqual(core.classifyValue("20rem", ["16px", "24px", "32px"]).verdict, "new",
   "rem against a px scale is not comparable — 'new', never a conflict fabricated out of a unit mismatch");
+
+// ---- Alt+click: the only place Study may stop an event ---------------------
+
+// Verified live 2026-08-07: clicking a CTA in Study mode pinned it AND followed
+// the href, and the navigation tore the overlay off the page before anything
+// could be saved. The most-studied element on the web was the one thing this
+// tool could not capture. Matt's call: a held key pins without navigating.
+var studyClick = extractFunction(studySrc, "onClick");
+assert.ok(studyClick.length > 0, "found study.js's onClick to inspect");
+assert.ok(/if \(e\.altKey\) \{ e\.preventDefault\(\); e\.stopPropagation\(\); \}/.test(studyClick),
+  "Alt+click both prevents the default AND stops propagation");
+
+// stopPropagation is not belt-and-braces here. Plenty of sites navigate from
+// their own JS click handler rather than from an href, and preventDefault says
+// nothing to those. Study's listener is on document in the capture phase, so
+// stopping there is what keeps the page still.
+assert.ok(/document\.addEventListener\("click", onClick, true\)/.test(studySrc),
+  "Study's click listener is in the capture phase, which is what makes stopPropagation reach page handlers");
+
+// The un-modified path must stay untouched: browsing a site is how you reach
+// what you want to study, and eating every link click was a Phase 1a bug.
+var plainPath = studyClick.replace(/if \(e\.altKey\) \{[^}]*\}/, "");
+assert.ok(!/preventDefault/.test(plainPath), "a plain click still never prevents the default");
+assert.ok(!/stopPropagation/.test(plainPath), "a plain click still never stops propagation");
+
+// Alt+click must fall through to the SAME pin/unpin body, not fork into a second
+// copy that can forget the favData/lastEl resets.
+assert.strictEqual((studyClick.match(/favData = null/g) || []).length, 2,
+  "one pin path and one unpin path — Alt+click does not add a third copy of the reset");
+
+// ---- The relaxed default, and why it is a product decision ----------------
+
+// Matt's ruling 2026-08-07: the tool is for INSPIRATION, not transcription.
+// Under that use a value landing near an existing token is the normal case and
+// mostly wants adapting, not a decision — so the default band was relaxed from
+// 0.5 to 0.25. A warning that fires on every near-miss gets clicked past.
+assert.strictEqual(core.classifyValue(20, [6, 10, 16, 999]).verdict, "conflict",
+  "20 against 16 (4px apart) still collides — this is the case the feature exists for");
+assert.strictEqual(core.classifyValue(24, [6, 10, 16, 999]).verdict, "new",
+  "24 against 16 (8px apart) is now a separate size, not a collision — the relaxation, asserted");
+
+// The threshold stays overridable, because the right band is a matter of taste
+// and this is the knob that gets tuned once there is a real design doc behind it.
+assert.strictEqual(core.classifyValue(24, [6, 10, 16, 999], { threshold: 0.5 }).verdict, "conflict",
+  "the old band is still reachable by passing threshold explicitly");
+
+// ---- Phase 2: the chrome must be readable on a page with no background -----
+
+// Found by looking at a screenshot, not by any test: stripe.com paints its
+// background on a wrapper div, so BOTH html and body compute to transparent.
+// The palette used to fall back to a hard-coded dark surface while still taking
+// the text colour from the page — black text on a dark panel, unreadable, on
+// every light site built that way, which is a large share of them.
+// The text colour is the signal that survives when the background does not.
+assert.strictEqual(typeof palette.fallbackBg, "function", "palette exports fallbackBg");
+assert.strictEqual(palette.fallbackBg(0), "rgb(250,250,250)", "black page text means a LIGHT page — never assume dark");
+assert.strictEqual(palette.fallbackBg(0.2), "rgb(250,250,250)", "dark-ish text still means a light page");
+assert.strictEqual(palette.fallbackBg(0.9), "rgb(24,24,27)", "light page text means a dark page");
+assert.strictEqual(palette.fallbackBg(1), "rgb(24,24,27)", "white text means a dark page");
+
+// The fallback is only reached when neither element paints one — a real
+// background must always win over the inference.
+assert.ok(/var bg = bgRaw \|\| fallbackBg\(/.test(paletteSrc), "a real page background takes precedence over the inferred one");
+assert.ok(/pick\(h, "backgroundColor", null\)/.test(paletteSrc), "the background chain bottoms out at null so 'no background' is distinguishable from a dark one");
+
+// ---- Phase 2: the Layout B toolbar ----------------------------------------
+
+// Every control in ui.js is wired through ONE delegated listener on document in
+// the CAPTURE phase. Not tidiness: linear.app's own capture handler called
+// stopPropagation and the first click on a toolbar button reached
+// document-capture with the right target and then never arrived at the button.
+// A per-button listener sits downstream of that and simply loses; a listener
+// already on document cannot be silenced by stopPropagation from at or below it.
+// The failure this prevents is the entire tool — the toolbar is the only way in.
+var uiDocListeners = uiSrc.match(/document\.addEventListener\(/g) || [];
+assert.strictEqual(uiDocListeners.length, 1, "ui.js wires its chrome through exactly one document listener, got " + uiDocListeners.length);
+assert.ok(/document\.addEventListener\("click",[\s\S]{0,900}?\}, true\);/.test(uiSrc),
+  "ui.js's delegated chrome listener is registered in the CAPTURE phase");
+
+// Delegation is only safe if it refuses to act on the host page's own markup —
+// a site with its own data-ann-mode attribute must not be able to drive us.
+assert.ok(/closest\("\[data-ann-act\],\[data-ann-mode\]"\)/.test(uiSrc), "the delegated listener resolves the control via closest()");
+assert.ok(/if \(!hit \|\| !isOurs\(hit\)\) return;/.test(uiSrc), "the delegated listener ignores anything that is not our own chrome");
+
+// A disabled button must be inert through the delegated path too. `disabled` on
+// a <button> stops its OWN listener firing, but says nothing about a delegated
+// one reading the attribute off it — so Compare would have been live.
+assert.ok(/if \(hit\.disabled\) return;/.test(uiSrc), "the delegated listener honours disabled, which a delegated path does not get for free");
+
+// The toolbar's second row must collapse rather than sit empty over the page.
+assert.ok(/if \(!node\) \{ row2\.style\.display = "none"; return; \}/.test(uiSrc), "setModeTools(null) collapses row 2");
+
+// The queue is on demand, and ui.js still holds no annotation state — the
+// existing "__annotations" guard above covers that and re-runs here.
+assert.ok(/setQueueItems\s*:/.test(uiSrc), "ui.js exposes setQueueItems so index.js can hand it rows");
+assert.ok(/setQueueCount\s*:/.test(uiSrc), "ui.js exposes setQueueCount");
 
 // ---- Task 5: absent values are not design decisions ------------------------
 

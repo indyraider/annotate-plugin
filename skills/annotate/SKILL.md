@@ -1,6 +1,6 @@
 ---
 name: annotate
-description: Point-and-comment on the live local app, plus a read-only Study mode that reverse-engineers any site's design system. Invoked as /annotate [url]. Opens the Playwright browser, injects an inspect-element-style overlay so Matt can hover, click, and leave comments (each auto-screenshotted), then watches for those comments and fixes them. Study mode (the 4th pill state) works against any URL, not just the local app, and never modifies the page it inspects. Studied elements can be favourited to a design-studies/ library and promoted, through a reconcile step, into the user's own design language. Dev tool only — never shipped, exempt from mobile-parity.
+description: Point-and-comment on the live local app, plus a read-only Study mode that reverse-engineers any site's design system. Invoked as /annotate [url]. Opens the Playwright browser, injects an inspect-element-style overlay so Matt can hover, click, and leave comments (each auto-screenshotted), then watches for those comments and fixes them. Study mode (the 4th toolbar tab) works against any URL, not just the local app, and never modifies the page it inspects. Studied elements can be favourited to a design-studies/ library and promoted, through a reconcile step, into the user's own design language. Dev tool only — never shipped, exempt from mobile-parity.
 ---
 
 # /annotate — point-and-comment on the live app
@@ -49,26 +49,39 @@ rather than pasted into your context.
    is what replaces pasting the old 628-line single-file implementation into
    `browser_evaluate` on every run (~24k tokens each time). Idempotent: if the overlay
    is already running, `__annotatorBoot` resolves `"already-running"` and touches nothing.
-5. **Tell Matt**, briefly: a pill is bottom-right, **starts OFF** (browse freely).
-   The pill cycles **off → on → measure → study → off** (click it, or press **Alt+A**
-   repeatedly). Flip it **ON** to comment; press again for **measure** mode (records
-   timings, clicks pass straight through — see below); press again for **study** mode
-   (reverse-engineers styles/design-system/motion on whatever's under the cursor,
-   read-only, works on any site — see the Study section below); again to return to
-   off. In annotate (**on**) mode, hover highlights the
-   element **and shows an inspector card** (computed font/size/color/padding/etc.), click
-   opens a comment box, **⌘/Ctrl+Enter** or **Save** submits. In the box he can **⌘V a
-   screenshot** (⌃⌘⇧4 copies one straight to the clipboard) or **drag an image file onto
-   the box** from Finder — a thumbnail confirms it, ✕ removes it.
-   **Hold Shift to "peek"** — click through to the app for one action (open a
-   dropdown/modal) without leaving annotate mode. Flip OFF to keep browsing. The pill
-   shows the running count. Say **"done"** to stop.
+5. **Tell Matt**, briefly: a toolbar sits **bottom-centre**, and it **starts with no mode
+   selected** (browse freely). Top row never changes — **Point · Measure · Compare · Study**,
+   then **Queue**; the second row shows whatever the selected mode needs and collapses when
+   nothing is selected. **Click the mode you want** (no cycling), or press **Alt+A** to
+   rotate `off → Point → Measure → Study → off`. **Clicking the mode you are already in
+   leaves it**, which is how you get back to using the page.
+   - **Point** — hover highlights the element **and shows an inspector card** (computed
+     font/size/color/padding/etc.), click opens a comment box, **⌘/Ctrl+Enter** or **Save**
+     submits. In the box he can **⌘V a screenshot** (⌃⌘⇧4 copies one straight to the
+     clipboard) or **drag an image file onto the box** from Finder — a thumbnail confirms
+     it, ✕ removes it. **Hold Shift to "peek"** — click through for one action (open a
+     dropdown/modal) without leaving the mode.
+   - **Measure** — records timings, clicks pass straight through (see below).
+   - **Compare** — **greyed out**; it is spec Phase 3 and not built. It ships visible on
+     purpose so the top row never has to grow a button and move the others.
+   - **Study** — reverse-engineers styles/design-system/motion, read-only, works on any
+     site. Row 2 holds the note/tags/★ Save favourite inputs.
+
+   **Queue** opens a panel of saved comments on demand and carries the running count;
+   clicking a row scrolls that annotation into view. Say **"done"** to stop.
+
+   **The toolbar's controls are wired through one delegated listener on `document`, in the
+   capture phase.** A host page that runs its own capture handler and calls
+   `stopPropagation` — linear.app does, on the first click after boot — kills any
+   per-button listener stone dead, and the toolbar is the only way into this tool. If you
+   ever split that wiring back out per button, the tool silently stops responding on
+   exactly the sites it is most worth using. `overlay.test.cjs` asserts there is exactly one.
 
 ## Measure mode
 
-The pill cycles **off → on → measure → study → off** (click, or Alt+A). In measure mode the
+Select **Measure** in the toolbar (or Alt+A round to it). In measure mode the
 overlay records and **does not touch clicks** — Matt uses the app completely normally while
-it watches. The pill shows the running entry count.
+it watches. Row 2 of the toolbar shows the running entry count.
 
 Entries come back on the same poll, in `perf`. Five kinds, each with `t` (ms since page load):
 
@@ -99,7 +112,7 @@ browser is. The first page load is not captured — recording starts when the mo
 
 ## Study mode
 
-The pill's 4th state. **This is the headline capability of the whole tool — Study works
+The toolbar's 4th tab. **This is the headline capability of the whole tool — Study works
 against any URL, not just the local app you're building.** `/annotate https://someothersite.com`
 is a completely valid invocation: point Study at a competitor's site, a piece of design
 inspiration, anything on the public web, and take its design system apart.
@@ -114,8 +127,9 @@ goes through `getComputedStyle`/`getBoundingClientRect`/`getAnimations`, and its
 comment pins in the other modes.
 
 **Driving it:**
-1. Cycle the pill to **study** (Setup step 5), or ask Matt to.
-2. Hover previews the readout live; **click an element to pin it** — the panel then stays
+1. Click **Study** in the toolbar (Setup step 5), or ask Matt to.
+2. Hover previews the readout live; **click an element to pin it** (**Alt+click** if it is a
+   link or button, so the page doesn't navigate away) — the panel then stays
    put while the mouse moves elsewhere, so you can pull the readout after moving on. Either
    Matt clicks the target himself, or you drive it with `browser_click`.
 3. Pull the pinned element's full readout with a `browser_evaluate` that **awaits the
@@ -204,30 +218,44 @@ if you need a real answer for that element.
     From a local origin (`http://localhost:3000`) the same fetch returns 200 — which is why
     this never showed up against the dev app.
 
-  **The escape hatch, verified working:** skip the fetch. Read `overlay/*.js` from disk in the
-  Playwright process and evaluate each in order — no network request, so there is nothing left
-  to block. Costs no context tokens either, same as the server.
+  **The escape hatch, verified working 2026-08-07:** skip the network entirely.
+  `browser_run_code_unsafe` runs your snippet in a **bare `vm` sandbox whose only host object
+  is `page`** — no `require`, no `fs`, no dynamic `import`. Anything file-shaped must therefore
+  go through `page` itself, and `addInitScript` takes a **path**, so Playwright reads the files
+  in its own process and injects them over CDP before the document's own scripts — the same
+  mechanism as `browser_evaluate`, which Chromium does not subject to page CSP.
   ```
   browser_run_code_unsafe({ code: `async (page) => {
-    const fs = await import("node:fs/promises");
-    const dir = "<this skill's directory>/overlay";
-    for (const f of ["core.js","palette.js","ui.js","point.js","measure.js","study-motion.js","study.js","index.js"])
-      await page.evaluate(await fs.readFile(dir + "/" + f, "utf8"));
+    const FILES = ["core.js","palette.js","ui.js","point.js","measure.js","study-motion.js","study.js","index.js"];
+    for (const f of FILES) await page.context().addInitScript({ path: "<this skill's directory>/overlay/" + f });
+    await page.reload({ waitUntil: "domcontentloaded" });
     return await page.evaluate(() => { window.__annotatorMods.index.setup(); return "ready"; });
   }` })
   ```
-  Use this whenever the target is a public site; Setup's `__annotatorBoot` path is fine for
-  the local app. **Not yet exercised through the MCP tool itself** — the boot was verified in
-  a directly-driven Chromium, so if `browser_run_code_unsafe` is unavailable or refused, say
-  so rather than falling back silently to a path that cannot work.
-- **A link can't be favourited — pinning it also navigates away.** Study deliberately never
-  calls `preventDefault` (making the page inert was a Phase 1a bug, since studying a site
-  means moving through it). The consequence, seen live on 2026-08-07: clicking a CTA pins it
-  *and* follows the href, and the navigation wipes the overlay before you can save anything.
-  So the single most-studied element on any site — the primary button — is the one you can't
-  favourite. Workaround: pin a non-navigating element, or study the button's styles from a
-  page where it isn't a link. There is no modifier that pins without navigating; adding one
-  is an open design decision, not something to improvise.
+  Confirmed booting on `github.com` (`default-src 'none'`), `stripe.com` and `linear.app`,
+  run inside a reproduction of that exact sandbox. **Four other approaches were tried and all
+  fail** — recorded so nobody spends the afternoon again: `await import("node:fs/promises")`
+  ("a dynamic import callback was not specified"), `require("fs")` ("require is not defined"),
+  and `page.addScriptTag({ path })` **both with and without** a CDP `Page.setBypassCSP`
+  ("Executing inline script violates the following Content Security Policy directive"). The
+  CSP bypass does not rescue `addScriptTag`, because the policy belongs to the document that
+  has already loaded.
+
+  **Two real costs.** It needs a **page reload**, so anything typed or opened on that page is
+  lost — boot before the user starts, never mid-session. And `browser_run_code_unsafe` is
+  RCE-equivalent, so the harness may prompt for permission each time. In exchange,
+  `addInitScript` persists for the browser context, so every later navigation re-injects the
+  modules by itself and the watch loop's self-heal only has to call `index.setup()` again.
+- **To study a button or link, hold Alt and click it** (fixed 2026-08-07). A plain click in
+  Study mode pins the element *and* lets the page navigate, because studying a site means
+  moving through it — making the page inert was a Phase 1a bug and must not come back.
+  But that meant the primary CTA, the most-studied element on any site, was the one thing
+  the tool could not capture: the navigation tore the overlay off the page before anything
+  could be saved. **Alt+click pins and holds the page still.** It both prevents the default
+  and stops propagation, because plenty of sites navigate from their own JS click handler
+  rather than an `href`, and preventing the default says nothing to those. This is the only
+  place Study is allowed to stop an event, and `overlay.test.cjs` asserts that the plain path
+  still stops nothing.
 - **First-paint-only effects are missed** — the overlay injects after the page has already
   loaded, so anything that only ever runs once, on initial paint, isn't there to observe.
 - **Shadow DOM isn't walked.** Elements inside a shadow root need separate handling that
@@ -366,19 +394,31 @@ narrating it buries the two buckets that do need him.
 `0 8px 30px rgb(0 0 0 / .12)`; your Shadows section is empty — add it as the first
 elevation level?" One line, one question.
 
-**6. `conflict` — lay out all three options with the real numbers, and stop.** A conflict is
-a value *close to but not* one he already has, which is the situation where quietly adopting
-it leaves two tokens doing one job. Say it in plain English:
+**6. `conflict` — lead with adapting, and say so in one line rather than asking three.**
 
-> This card's radius is **20px**. You already have **16px**. Four pixels apart, so you'd end
-> up with two "large corner" radii and no rule for which to use. Three ways to go:
-> - **Adapt** — use your existing 16px and lose the 4px difference. Nothing changes in your system.
-> - **Adopt** — add 20px and retire 16px, updating everywhere 16px is used today.
-> - **Exception** — keep 16px as the rule and record this one as a deliberate exception, with the reason.
+**This is inspiration, not transcription** (Matt's ruling, 2026-08-07). He is saying "I like
+that card's corners, use it as a starting point" — not "reproduce this site". So when a
+studied value lands near something he already has, **the expected outcome is that it snaps to
+his value**, and treating that as a decision to be adjudicated is what turns a useful tool
+into a nagging one. Report it, don't interrogate him:
 
-**Do not recommend one, do not pick the "obvious" one, do not act on silence.** The
-`suggestion` string in each conflict entry is phrased as a question on purpose. If he doesn't
-answer, the favourite stays a favourite — that is a fine outcome.
+> Its radius is **20px**; snapped to your existing **16px** (4px apart).
+
+That is a statement he can override, not a question blocking the work. **Only stop and lay
+out the choice when the difference looks deliberate** — a value that is close but where the
+*source* clearly treats it as a distinct size (it appears repeatedly across the studied page,
+or its own sweep shows both values in one scale). Then, and only then:
+
+> - **Adapt** — use your existing 16px. The 4px goes.
+> - **Adopt** — add 20px and retire 16px everywhere it is used today.
+> - **Exception** — keep 16px as the rule, record this one as deliberate, with the reason.
+
+**Still never choose the adopt-or-exception branch for him.** Snapping is the safe default
+because it is reversible and leaves his system unchanged; changing or forking his scale is
+neither, and stays his call.
+
+The band was relaxed to 0.25 for exactly this reason — see `classifyValue`. A value 8px from
+his nearest token is now simply a different size, not a collision.
 
 **7. Write it into the right section.** Into Radii, under Radii. **Never append to the bottom
 of his document** — a design doc that grows by accretion stops being read, which defeats the
@@ -477,7 +517,7 @@ Repeat until Matt says done (or the browser closes / evaluate errors):
 
 - The overlay is **session-ephemeral** (mirrored to `localStorage` only). Nothing is
   stored server-side. This is the intended "quick tool" tradeoff.
-- **Toggling the mode off (pill or Alt+A) while a comment box is open discards the typed
+- **Leaving the mode (clicking the active tab, or Alt+A) while a comment box is open discards the typed
   text.** `disable()` closes the box on the way out; this is intentional, not a bug — the
   box's own Escape handler only exists while the mode is enabled, so leaving the box open
   across a mode switch would make it un-closable. Save or Cancel before toggling off.

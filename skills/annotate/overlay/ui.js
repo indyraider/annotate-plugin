@@ -56,9 +56,11 @@
     }
     function hideInspector() { insp.style.display = "none"; }
 
-    // ---- bottom-right control bar: [guide panel] over [ ? ] [ pill ] ----
+    // ---- bottom-CENTRE control bar: [guide] [queue] over the Layout B toolbar ----
+    // Centred, not cornered: the toolbar is now two rows and wide enough that a
+    // corner anchor puts it over whatever the page keeps in that corner.
     var bar = document.createElement("div"); bar.className = "__ann-ui";
-    Object.assign(bar.style, { position: "fixed", bottom: "16px", right: "16px", zIndex: Z, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "8px", font: "12px/1.4 " + SANS });
+    Object.assign(bar.style, { position: "fixed", bottom: "16px", left: "50%", transform: "translateX(-50%)", zIndex: Z, display: "flex", flexDirection: "column", alignItems: "center", gap: "8px", font: "12px/1.4 " + SANS });
     document.body.appendChild(bar);
 
     var guide = document.createElement("div");
@@ -86,6 +88,7 @@
       [["Click"], "Leave a comment"],
       [["⌘", "V"], "Paste/drop an image"],
       [["⌘/Ctrl", "↵"], "Save comment"],
+      [["Alt"], "Click without navigating"],
       [["Shift"], "Hold to click through"],
       [["Esc"], "Cancel comment"]
     ].forEach(function (r) {
@@ -93,48 +96,204 @@
       guide.appendChild(row);
       if (r[0].length === 1 && r[0][0] === "Click") clickHintEl = row.lastChild;
     });
+    // Starts hidden behind the ? button. With a labelled toolbar the shortcut
+    // list is a reference, not an orientation aid, and it covered a chunk of
+    // the page it was meant to help inspect.
+    guide.style.display = "none";
     bar.appendChild(guide);
     function setClickHint(text) { if (clickHintEl) clickHintEl.textContent = text; }
 
-    var controls = document.createElement("div"); Object.assign(controls.style, { display: "flex", alignItems: "center", gap: "8px" });
-    var help = document.createElement("button"); help.textContent = "?"; help.setAttribute("aria-label", "Toggle shortcut guide");
-    Object.assign(help.style, { width: "28px", height: "28px", borderRadius: "999px", background: pal.surface2, color: pal.text2, border: "1px solid " + pal.border, font: "600 13px " + SANS, cursor: "pointer" });
-    help.addEventListener("click", function () { guide.style.display = guide.style.display === "none" ? "block" : "none"; });
-    var pill = document.createElement("div");
-    Object.assign(pill.style, { padding: "7px 13px", borderRadius: "999px", font: "600 12px/1 " + SANS, cursor: "pointer", userSelect: "none", border: "1px solid " + pal.border, boxShadow: "0 2px 10px rgba(0,0,0,.28)" });
-    controls.append(help, pill); bar.appendChild(controls);
+    // The queue opens on demand rather than living permanently on screen —
+    // the whole point of this overlay is that the page under it stays visible.
+    // ui.js holds no annotation state (asserted); index.js hands it rows.
+    var queuePanel = document.createElement("div");
+    Object.assign(queuePanel.style, { display: "none", flexDirection: "column", gap: "4px", width: "300px", maxHeight: "260px", overflowY: "auto", background: pal.elevated, color: pal.text, border: "1px solid " + pal.border, borderRadius: "12px", boxShadow: "0 10px 34px rgba(0,0,0,.42)", padding: "10px 12px", font: "12px/1.5 " + SANS });
+    bar.appendChild(queuePanel);
 
-    // Moved out of updatePill (overlay.js): index.js owns the mode/count text, this
-    // just applies it to the DOM.
-    function setPillLabel(text, background, color) {
-      pill.textContent = text;
-      pill.style.background = background;
-      pill.style.color = color;
+    var queueBtn = document.createElement("button");
+    queueBtn.setAttribute("aria-label", "Toggle the comment queue");
+    queueBtn.setAttribute("data-ann-act", "queue");
+    Object.assign(queueBtn.style, { padding: "6px 11px", borderRadius: "7px", border: "1px solid " + pal.border, background: pal.surface2, color: pal.text2, font: "600 12px/1 " + SANS, cursor: "pointer", whiteSpace: "nowrap" });
+    function setQueueCount(n) { queueBtn.textContent = n ? "Queue " + n : "Queue"; }
+    setQueueCount(0);
+    // Rows are built from plain {n, text, status} — no annotation object, no
+    // storage key, nothing this file could come to depend on.
+    function setQueueItems(items, onPick) {
+      queuePanel.textContent = "";
+      if (!items || !items.length) {
+        var empty = document.createElement("div");
+        empty.textContent = "Nothing queued yet.";
+        Object.assign(empty.style, { color: pal.text3, padding: "4px 0" });
+        queuePanel.appendChild(empty);
+        return;
+      }
+      items.forEach(function (it) {
+        var row = document.createElement("div");
+        Object.assign(row.style, { display: "flex", gap: "8px", alignItems: "baseline", padding: "4px 6px", borderRadius: "6px", cursor: onPick ? "pointer" : "default" });
+        var badge = document.createElement("span");
+        badge.textContent = it.n;
+        Object.assign(badge.style, { flex: "none", minWidth: "18px", textAlign: "center", background: it.status === "new" ? pal.accent : pal.surface2, color: it.status === "new" ? pal.accentFg : pal.text3, borderRadius: "5px", font: "600 10px/1.7 " + MONO });
+        var txt = document.createElement("span");
+        txt.textContent = it.text;
+        Object.assign(txt.style, { color: pal.text2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
+        row.append(badge, txt);
+        if (onPick) row.addEventListener("click", function () { onPick(it.id); });
+        queuePanel.appendChild(row);
+      });
+    }
+
+    var help = document.createElement("button"); help.textContent = "?"; help.setAttribute("aria-label", "Toggle shortcut guide");
+    help.setAttribute("data-ann-act", "help");
+    Object.assign(help.style, { width: "26px", height: "26px", flex: "none", borderRadius: "999px", background: pal.surface2, color: pal.text2, border: "1px solid " + pal.border, font: "600 13px " + SANS, cursor: "pointer", marginLeft: "2px" });
+
+    // ---- one delegated CAPTURE listener for every control in this file ----
+    //
+    // Not a tidiness choice. Caught on linear.app: the very first click on a
+    // toolbar button reached document-capture with the right target and then
+    // never arrived at the button — the host page runs its own capture handler
+    // and calls stopPropagation, which kills the descent before our chrome sees
+    // anything. A per-button listener is downstream of that and simply loses.
+    //
+    // A listener on `document` in the capture phase is the earliest point we can
+    // occupy, and stopPropagation from ANY listener at or below this node cannot
+    // silence a listener already registered on the same node. Only
+    // stopImmediatePropagation registered on document-capture before us beats
+    // this, and nothing can defend against that.
+    //
+    // The failure it prevents is the whole tool: this toolbar is the only way in.
+    var actions = {};
+    var modeSelectHandler = null;
+    function onAct(name, fn) { actions[name] = fn; }
+    document.addEventListener("click", function (e) {
+      var t = e.target;
+      if (!t || !t.closest) return;
+      var hit = t.closest("[data-ann-act],[data-ann-mode]");
+      if (!hit || !isOurs(hit)) return;                 // never act on the host page's own markup
+      var mode = hit.getAttribute("data-ann-mode");
+      if (mode !== null) {
+        if (hit.disabled) return;
+        if (modeSelectHandler) modeSelectHandler(mode);
+        return;
+      }
+      var act = actions[hit.getAttribute("data-ann-act")];
+      if (act) act(hit);
+    }, true);
+
+    onAct("help", function () { guide.style.display = guide.style.display === "none" ? "block" : "none"; });
+    onAct("queue", function () { queuePanel.style.display = queuePanel.style.display === "none" ? "flex" : "none"; });
+
+    // ---- Layout B toolbar: a fixed row of modes over a row that swaps ----
+    //
+    //   ┌──────────────────────────────────────────┐
+    //   │  Point  Measure  Compare  Study │ Queue  │  <- never changes
+    //   ├──────────────────────────────────────────┤
+    //   │  <tools for the selected mode>           │  <- swaps
+    //   └──────────────────────────────────────────┘
+    //
+    // Chosen over one wide row (crowds the page at ~700px) and over a side panel
+    // (taxes the width of the thing being reviewed). B is the only one that still
+    // works at fifteen tools, and there will be fifteen.
+    //
+    // ui.js does not know what a mode IS. index.js hands it a list of
+    // {key, label} and a callback; this file only draws buttons and marks one
+    // active. That is what keeps the "ui.js never branches on mode" invariant
+    // true by construction rather than by discipline.
+    var toolbar = document.createElement("div");
+    Object.assign(toolbar.style, { display: "flex", flexDirection: "column", background: pal.elevated, border: "1px solid " + pal.border, borderRadius: "12px", boxShadow: "0 10px 34px rgba(0,0,0,.42)", overflow: "hidden" });
+
+    var row1 = document.createElement("div");
+    Object.assign(row1.style, { display: "flex", alignItems: "center", gap: "2px", padding: "5px 6px" });
+    var row2 = document.createElement("div");
+    Object.assign(row2.style, { display: "none", borderTop: "1px solid " + pal.hairline, padding: "8px 10px" });
+    toolbar.append(row1, row2);
+    bar.appendChild(toolbar);
+
+    function tabStyle(btn, active, disabled) {
+      Object.assign(btn.style, {
+        padding: "6px 11px", borderRadius: "7px", border: "1px solid transparent",
+        font: "600 12px/1 " + SANS, cursor: disabled ? "not-allowed" : "pointer",
+        userSelect: "none", whiteSpace: "nowrap",
+        background: active ? pal.accent : "transparent",
+        color: disabled ? pal.text3 : (active ? pal.accentFg : pal.text2),
+        opacity: disabled ? "0.5" : "1"
+      });
+    }
+
+    var modeButtons = {};
+    var activeMode = null;
+    function setModes(items, onSelect) {
+      row1.textContent = "";
+      modeButtons = {};
+      modeSelectHandler = onSelect;
+      items.forEach(function (item) {
+        var b = document.createElement("button");
+        b.textContent = item.label;
+        b.setAttribute("data-ann-mode", item.key);
+        if (item.title) b.title = item.title;
+        b.disabled = !!item.disabled;
+        tabStyle(b, false, item.disabled);
+        modeButtons[item.key] = { el: b, disabled: !!item.disabled };
+        row1.appendChild(b);
+      });
+      // The queue sits after a divider — it is not a mode, and a user who
+      // reads it as a fifth mode will expect selecting it to change what
+      // clicking the page does.
+      var div = document.createElement("span");
+      Object.assign(div.style, { width: "1px", alignSelf: "stretch", background: pal.hairline, margin: "2px 6px" });
+      row1.append(div, queueBtn, help);
+      if (activeMode) setActiveMode(activeMode);
+    }
+    function setActiveMode(key) {
+      activeMode = key;
+      for (var k in modeButtons) {
+        if (!Object.prototype.hasOwnProperty.call(modeButtons, k)) continue;
+        tabStyle(modeButtons[k].el, k === key, modeButtons[k].disabled);
+      }
+    }
+
+    // Row 2's contents belong to whoever owns mode state, which is not this
+    // file. Passing null collapses the row rather than leaving an empty strip
+    // of chrome sitting over the page being studied.
+    function setModeTools(node) {
+      row2.textContent = "";
+      if (!node) { row2.style.display = "none"; return; }
+      row2.appendChild(node);
+      row2.style.display = "block";
     }
 
     // ---- favourite panel: note + tags input, for Study mode's favourite
     // action. Created generically, same as everything else in this file — no
     // mode check lives here (see the guard test below); index.js decides when
-    // it's shown via setFavouriteVisible(), exactly as it already decides
+    // it goes into row 2 via setModeTools(), exactly as index.js already decides
     // setClickHint()'s text.
     var favPanel = document.createElement("div"); favPanel.className = "__ann-ui";
-    Object.assign(favPanel.style, { display: "none", flexDirection: "column", gap: "6px", width: "244px", background: pal.elevated, border: "1px solid " + pal.border, borderRadius: "12px", boxShadow: "0 10px 34px rgba(0,0,0,.42)", padding: "10px 12px", font: "12px " + SANS });
+    Object.assign(favPanel.style, { display: "flex", flexDirection: "column", gap: "6px", width: "280px", font: "12px " + SANS });
     var favNote = document.createElement("input"); favNote.type = "text"; favNote.placeholder = "Note";
     var favTags = document.createElement("input"); favTags.type = "text"; favTags.placeholder = "Tags, comma separated";
     [favNote, favTags].forEach(function (inp) {
       Object.assign(inp.style, { font: "12px " + SANS, padding: "6px 8px", borderRadius: "6px", border: "1px solid " + pal.border, background: pal.surface2, color: pal.text });
     });
     var favBtn = document.createElement("button"); favBtn.textContent = "★ Save favourite";
+    favBtn.setAttribute("data-ann-act", "fav-save");
     Object.assign(favBtn.style, { padding: "6px 10px", borderRadius: "6px", border: "1px solid " + pal.border, background: pal.accent, color: pal.accentFg, font: "600 12px " + SANS, cursor: "pointer" });
     favPanel.append(favNote, favTags, favBtn);
-    bar.appendChild(favPanel);
+    // NOT appended anywhere here — it is one of the things index.js can hand to
+    // setModeTools(), and only index.js knows which mode wants it.
 
     var favouriteHandler = null;
     function onFavouriteSave(fn) { favouriteHandler = fn; }
-    favBtn.addEventListener("click", function () {
+    onAct("fav-save", function () {
       if (favouriteHandler) favouriteHandler(favNote.value, favTags.value);
     });
-    function setFavouriteVisible(v) { favPanel.style.display = v ? "flex" : "none"; }
+
+    // A plain line of text for a mode whose row 2 is just a status ("Passes
+    // through (recording) · 41 entries"). Saves index.js hand-building a node.
+    function toolsText(text) {
+      var d = document.createElement("div");
+      d.textContent = text;
+      Object.assign(d.style, { color: pal.text2, font: "12px " + SANS });
+      return d;
+    }
 
     return {
       showHighlight: showHighlight,
@@ -142,12 +301,18 @@
       showInspector: showInspector,
       hideInspector: hideInspector,
       bar: bar,
-      pill: pill,
+      toolbar: toolbar,
       guide: guide,
       help: help,
-      setPillLabel: setPillLabel,
+      setModes: setModes,
+      setActiveMode: setActiveMode,
+      setModeTools: setModeTools,
+      toolsText: toolsText,
+      favPanel: favPanel,
+      setQueueCount: setQueueCount,
+      setQueueItems: setQueueItems,
+      queuePanel: queuePanel,
       setClickHint: setClickHint,
-      setFavouriteVisible: setFavouriteVisible,
       onFavouriteSave: onFavouriteSave,
       isOurs: isOurs
     };
