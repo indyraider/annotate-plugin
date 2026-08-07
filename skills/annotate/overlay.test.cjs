@@ -168,4 +168,43 @@ for (const k of uiKeys) {
   assert.ok(new RegExp(k + "\\s*:").test(uiSrc), "ui.create() handles must include key " + k);
 }
 
+const pointSrc = fs.readFileSync(MOD("point.js"), "utf8");
+const measureSrc = fs.readFileSync(MOD("measure.js"), "utf8");
+
+// THE mode-guard invariant. With four modes coming, a guard rewritten as
+// === "off" makes measure mode start swallowing clicks — silently.
+const pointGuards = pointSrc.match(/mode\s*!==\s*["']on["']/g) || [];
+assert.ok(pointGuards.length >= 4, "point.js keeps its mode !== 'on' guards, found " + pointGuards.length);
+assert.ok(!/mode\s*===\s*["']off["']/.test(pointSrc), "no === 'off' guards (breaks with a third mode)");
+
+// No file input, in every module that exists yet. index.js is Task 5's file —
+// checked here too once it lands; until then this loop would ENOENT rather
+// than fail the assertion, which is not the same thing as the guard holding.
+for (const f of ["point.js", "measure.js"]) {
+  const src = fs.readFileSync(MOD(f), "utf8");
+  assert.ok(!/\.type\s*=\s*["']file["']/.test(src), "no file input in " + f + " (its chooser jams the agent)");
+}
+
+// Measure mode must stay passive: it wraps fetch but must always delegate.
+// The first version of this recorder used a forward-only window and reported
+// servedFromCache: true for every navigation — the exact opposite of the truth —
+// with all 16 unit tests passing.
+assert.ok(/origFetch/.test(measureSrc), "measure.js keeps the original fetch reference");
+assert.ok(/history\.pushState/.test(measureSrc), "measure.js patches pushState");
+assert.ok(/RSC_LOOKBACK_MS/.test(measureSrc), "measure.js keeps the backward lookback window");
+
+// Images are stored per-annotation, never inside the __annotations blob: one
+// Retina paste can exceed the whole quota and a throwing write would silently
+// stop persisting every annotation.
+assert.ok(/__ann_img_/.test(pointSrc), "point.js keeps per-annotation image keys");
+assert.ok(/IMG_MAX_PX/.test(pointSrc), "point.js keeps the downscale cap");
+
+// Smoke-require both new modules, mirroring the core/palette/ui checks above — a
+// broken relative path or a missing export fails here, not on first injection.
+const point = require(MOD("point.js"));
+assert.strictEqual(typeof point.create, "function", "point exports create");
+
+const measure = require(MOD("measure.js"));
+assert.strictEqual(typeof measure.create, "function", "measure exports create");
+
 console.log("overlay.test: ok");
