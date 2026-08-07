@@ -240,7 +240,7 @@
   // looks native wherever it lands. Every element here is created fresh and
   // appended to <body> — nothing touches an existing page node, same as the
   // highlight box and inspector card in ui.js. ----
-  function createChrome(pal) {
+  function createChrome(pal, ui) {
     var panel = document.createElement("div"); panel.className = "__ann-ui";
     // pointerEvents starts at "none": the panel sits 14px from the cursor, close
     // enough that a click meant for the page can land on its footprint, and the
@@ -249,7 +249,9 @@
     // flips it back on only while the cursor is actually over it, so scrolling
     // still works but a click aimed at the underlying page always passes through.
     Object.assign(panel.style, {
-      position: "fixed", zIndex: Z, display: "none", maxWidth: "320px", maxHeight: "72vh",
+      // Z - 2, not Z: the toolbar is the only way to drive this tool, so it
+      // outranks the readout by construction and not by DOM order.
+      position: "fixed", zIndex: Z - 2, display: "none", maxWidth: "320px", maxHeight: "72vh",
       overflow: "auto", pointerEvents: "none", background: pal.elevated, border: "1px solid " + pal.border,
       borderRadius: "8px", padding: "10px 12px", font: "11px/1.6 " + MONO, color: pal.text,
       boxShadow: "0 8px 30px rgba(0,0,0,.4)"
@@ -286,10 +288,31 @@
       if (data.tailwind.length) panel.appendChild(row("tailwind", data.tailwind.join(" ")));
     }
 
+    // The readout must never sit over the toolbar. Reported live 2026-08-07:
+    // "nothing happens when i click save favourite" — the readout is up to 72vh
+    // tall, it is placed relative to the cursor, and Phase 2 moved the toolbar
+    // from the bottom-RIGHT corner to the bottom CENTRE, straight underneath it.
+    // Worse, the panel flips to pointerEvents:auto whenever the cursor is over
+    // it, so moving the mouse down to the ★ button armed the very thing blocking
+    // it. The controls were unreachable, silently, with no error anywhere.
+    //
+    // So the toolbar's top edge is a hard floor: the panel shrinks to fit above
+    // it rather than being pushed off the top of the screen.
+    function reservedTop() {
+      try {
+        var r = ui && ui.bar && ui.bar.getBoundingClientRect();
+        if (r && r.height) return r.top;
+      } catch (e) {}
+      return window.innerHeight;
+    }
     function show(x, y) {
       panel.style.display = "block";
+      var floor = reservedTop() - 8;
+      // maxHeight FIRST — offsetHeight below has to be the clamped height, not
+      // the height the panel would have had if it were allowed to run long.
+      panel.style.maxHeight = Math.max(120, floor - 16) + "px";
       panel.style.left = Math.min(x + 14, window.innerWidth - panel.offsetWidth - 8) + "px";
-      panel.style.top = Math.min(y + 14, window.innerHeight - panel.offsetHeight - 8) + "px";
+      panel.style.top = Math.max(8, Math.min(y + 14, floor - panel.offsetHeight)) + "px";
     }
     function hide() { panel.style.display = "none"; }
     function destroy() { if (panel.parentNode) panel.parentNode.removeChild(panel); }
@@ -312,7 +335,12 @@
   // Only pal and ui are needed for the readout itself; the rest of the shape
   // is accepted so this module stays a drop-in the same way point.js/measure.js are.
   function create(ctx) {
-    var pal = ctx.pal, ui = ctx.ui;
+    // notify is optional (the Node self-check builds a ctx without it), so every
+    // call site guards on it. Declared HERE rather than referenced bare: an
+    // undeclared `notify` throws ReferenceError rather than reading as undefined,
+    // and it would throw inside the click handler — where the failure presents as
+    // "clicking does nothing", which is the exact report this fix came from.
+    var pal = ctx.pal, ui = ctx.ui, notify = ctx.notify;
     var chrome = null, pinned = null, lastEl = null, favData = null;
 
     function paint(el, x, y) {
@@ -369,7 +397,7 @@
       // the next mousemove over that SAME element is silently ignored, so the
       // panel/highlight can show a stale element until the cursor reaches a
       // THIRD, different one.
-      if (pinned === e.target) { pinned = null; lastEl = null; favData = null; return; }
+      if (pinned === e.target) { pinned = null; lastEl = null; favData = null; if (notify) notify(); return; }
       pinned = e.target;
       lastEl = null;
       // A stale note/tags from the PREVIOUS pin must never attach itself to a
@@ -377,13 +405,16 @@
       favData = null;
       ui.showHighlight(pinned);
       paint(pinned, e.clientX, e.clientY);
+      // Tell index.js the pin moved, so a "★ Saved" message left over from the
+      // PREVIOUS element does not sit there implying this one was saved too.
+      if (notify) notify();
     }
 
     var attached = false;
     function enable() {
       if (attached) return;
       attached = true;
-      chrome = createChrome(pal);
+      chrome = createChrome(pal, ui);
       document.addEventListener("mousemove", onMousemove, true);
       document.addEventListener("click", onClick, true);
     }

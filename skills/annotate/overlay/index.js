@@ -87,6 +87,9 @@
       } else if (m === "study") {
         uiHandles.setClickHint("Pin the readout");
         uiHandles.setModeTools(uiHandles.favPanel);
+        // Reached on every pin change (study.js notifies), so a confirmation
+        // from the previous element never lingers over a new one.
+        uiHandles.setFavouriteStatus("");
       } else if (m === "compare") {
         uiHandles.setClickHint("Passes through");
         uiHandles.setModeTools(uiHandles.comparePanel);
@@ -185,7 +188,16 @@
     // is the one that turns that into the real pin-and-record action below.
     uiHandles.onFavouriteSave(function (note, tagsText) {
       var tags = tagsText ? tagsText.split(",").map(function (t) { return t.trim(); }).filter(function (t) { return t.length > 0; }) : [];
-      studyMode.favourite(note, tags);
+      var saved = studyMode.favourite(note, tags);
+      // favourite() returns null when nothing is pinned, and that used to be the
+      // whole story — no message, no error, nothing on screen either way. Both
+      // outcomes now say what happened; the no-op case says what to do instead,
+      // because "click an element first" is not guessable from a dead button.
+      if (!saved) {
+        uiHandles.setFavouriteStatus("Click an element on the page first, then save.", false);
+        return;
+      }
+      uiHandles.setFavouriteStatus("★ Saved" + (tags.length ? " · " + tags.join(", ") : "") + " — pull it with __annotatorStudyFavourite()", true);
     });
 
     // Alt+A must be attached UNCONDITIONALLY, not inside point mode's enable()/
