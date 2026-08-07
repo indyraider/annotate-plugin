@@ -11,7 +11,15 @@ function createServer(opts) {
   const root = path.resolve(opts.root);
   return http.createServer(function (req, res) {
     const cors = { "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store" };
-    const rel = decodeURIComponent((req.url || "/").split("?")[0]);
+    let rel;
+    try {
+      rel = decodeURIComponent((req.url || "/").split("?")[0]);
+    } catch (err) {
+      if (err instanceof URIError) {
+        res.writeHead(400, cors); return res.end("bad request");
+      }
+      throw err;
+    }
     const target = path.resolve(path.join(root, rel));
 
     // Containment check: resolved path must sit inside root.

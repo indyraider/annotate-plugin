@@ -45,6 +45,15 @@ function get(port, urlPath) {
   const escaped = await get(port, "/../../../etc/passwd");
   assert.ok(escaped.status === 403 || escaped.status === 404, "refuses traversal, got " + escaped.status);
 
+  // Malformed percent-escapes must not crash the server. A stray % or invalid
+  // UTF-8 sequence like %E0%80 throws URIError from decodeURIComponent; verify
+  // the server returns 400, keeps the CORS header, and survives to serve again.
+  const malformed = await get(port, "/%E0%80");
+  assert.strictEqual(malformed.status, 400, "rejects malformed URL");
+  assert.strictEqual(malformed.headers["access-control-allow-origin"], "*", "CORS header on 400");
+  const survived = await get(port, "/hello.js");
+  assert.strictEqual(survived.status, 200, "server survived malformed request");
+
   server.close();
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log("serve.test.cjs — all assertions passed");
