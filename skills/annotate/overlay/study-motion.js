@@ -212,7 +212,7 @@
     var frameCount = 0, writeCount = 0, finished = false, observer = null, timer = null;
     var t0 = performance.now();
 
-    window.requestAnimationFrame = function (cb) { frameCount++; return origRaf(cb); };
+    window.requestAnimationFrame = function (cb) { frameCount++; return origRaf.apply(this, arguments); };
 
     try {
       observer = new MutationObserver(function (mutations) {

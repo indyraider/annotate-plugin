@@ -10,7 +10,7 @@
   else root.__annotatorBoot = api.boot;
 })(typeof self !== "undefined" ? self : this, function () {
 
-  var FILES = ["core.js", "palette.js", "ui.js", "point.js", "measure.js", "index.js"];
+  var FILES = ["core.js", "palette.js", "ui.js", "point.js", "measure.js", "study-motion.js", "study.js", "index.js"];
 
   // Fetch each module as TEXT and eval it, rather than importing it as a module.
   // The real reason: one text payload works for both this loader and any future

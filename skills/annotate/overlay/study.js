@@ -226,10 +226,14 @@
 
   // Task 4/5 moved motion detection to its own module (study.js was already
   // past its line-count guideline) — delegate rather than re-implement.
-  function readMotion(el) {
+  // onUpdate must be forwarded, not dropped (Task 6 fix): tier 3's live sample and
+  // tier 4's source-map fetch both land later through study-motion.js's own onUpdate
+  // contract, and take() below depends on it firing to resolve as soon as both tiers
+  // are actually done instead of always burning its full ceiling.
+  function readMotion(el, onUpdate) {
     var studyMotion = (typeof module !== "undefined" && module.exports) ? require("./study-motion.js") : (window.__annotatorMods && window.__annotatorMods.studyMotion);
     if (!studyMotion) throw new Error("annotate: study.js requires study-motion.js to load first");
-    return studyMotion.create({}).readMotion(el);
+    return studyMotion.create({}).readMotion(el, onUpdate);
   }
 
   // ---- readout panel: our own chrome, styled from the host palette so it
@@ -335,13 +339,17 @@
 
     // Only `click` is intercepted — unlike point.js, Study leaves
     // pointerdown/mousedown/auxclick alone, because studying a site means
-    // clicking through it to reach the page being studied. Shift+click is
-    // the same peek convention point.js uses: it bypasses the pin entirely
-    // and reaches the real page underneath.
+    // clicking through it to reach the page being studied. This handler pins
+    // the readout on the clicked element but deliberately never calls
+    // preventDefault()/stopPropagation() (Task 6 fix — the first version did,
+    // which silently ate every link click and navigation in Study mode: the
+    // exact regression the guard comment already warned about but the code
+    // didn't honor). Shift+click is the same peek convention point.js uses:
+    // it skips the pin change entirely, leaving the page's own click handling
+    // completely undisturbed either way.
     function onClick(e) {
       if (e.shiftKey) return;
       if (ui.isOurs(e.target)) return;
-      e.preventDefault(); e.stopPropagation();
       if (pinned === e.target) { pinned = null; return; }
       pinned = e.target;
       ui.showHighlight(pinned);
@@ -366,7 +374,44 @@
       if (chrome) { chrome.destroy(); chrome = null; }
     }
 
-    return { enable: enable, disable: disable, readElement: readElement, readPage: readPage, readMotion: readMotion };
+    // The agent-facing full readout for the pinned element. readMotion(el) returns
+    // synchronously with only what's known instantly (tiers 1/2, tier 3's network
+    // fingerprint) — tier 3's live sample runs ~1s and tier 4's source-map fetch is
+    // async on top of that, both delivered later through readMotion's undocumented
+    // second parameter (onUpdate). Returning the synchronous readMotion() result
+    // directly would hand the agent a permanent {status:"sampling"}/{status:"checking"}
+    // for exactly the bundled-library case tier 3 exists to catch. So `take()` wraps
+    // it in a Promise that resolves once both tiers report done — with a ceiling so a
+    // page that never settles (a source-map fetch that never responds; no rAF/
+    // MutationObserver support) can't hang the agent's browser_evaluate call forever.
+    var TAKE_CEILING_MS = 3000; // ~1s sample + slack for tier 4's fetches, then hand back whatever's in
+    function take() {
+      if (!pinned) return Promise.resolve(null);
+      var el = pinned;
+      var elementData = readElement(el);
+      return new Promise(function (resolve) {
+        var settled = false;
+        function finish(motionData) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(ceiling);
+          resolve({ element: elementData, motion: motionData });
+        }
+        // `motion` (the readMotion return value) is mutated in place by onUpdate, not
+        // replaced — but reading it from the ceiling closure rather than trusting the
+        // onUpdate parameter alone means the ceiling always sees the latest state even
+        // if it fires before assignment technically completes is not a concern here
+        // (setTimeout is always a later macrotask), while onUpdate uses its own
+        // `updated` argument so a same-tick synchronous done() (no rAF support) can't
+        // read `motion` before this line finishes assigning it.
+        var motion = readMotion(el, function (updated) {
+          if (updated.tier3.proof.status !== "sampling" && updated.tier4.status !== "checking") finish(updated);
+        });
+        var ceiling = setTimeout(function () { finish(motion); }, TAKE_CEILING_MS);
+      });
+    }
+
+    return { enable: enable, disable: disable, readElement: readElement, readPage: readPage, readMotion: readMotion, take: take };
   }
 
   return { create: create };

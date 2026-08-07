@@ -203,9 +203,10 @@ assert.ok(/25000/.test(indexSrc), "index.js keeps the 25s long-poll ceiling");
 // The idempotent re-inject guard.
 assert.ok(/if\s*\(\s*window\.__annotator\s*\)\s*return/.test(indexSrc), "index.js keeps the re-inject guard");
 
-// The mode cycle must remain off -> on -> measure -> off. Guarded on the source since
-// a third mode silently rewritten as "off" -> "measure" would drop straight back to off.
-assert.ok(/"off"\s*:\s*"measure"/.test(indexSrc) || /"measure"\s*:\s*"off"/.test(indexSrc), "toggle must cycle through measure");
+// The mode cycle must remain off -> on -> measure -> study -> off (Task 6 added the
+// fourth mode). Guarded on the source since a rewritten cascade could silently drop
+// straight back to off from measure instead of reaching study.
+assert.ok(/"measure"\s*\?\s*"study"/.test(indexSrc) || /"study"\s*:\s*"off"/.test(indexSrc), "toggle must cycle through study before off");
 
 // Smoke-require index.js, mirroring the other five modules — a broken
 // relative path or a missing export fails here, not on first injection.
@@ -221,7 +222,8 @@ assert.ok(!/__ann_boot["']\s*,\s*\w+\.toString\(\)/.test(loaderSrc), "hand-conca
 assert.ok(/__ann_boot_url/.test(loaderSrc), "loader stores a re-fetch URL instead");
 
 // Load order is a real dependency chain: core -> palette -> ui -> modes -> index.
-const order = ["core.js", "palette.js", "ui.js", "point.js", "measure.js", "index.js"];
+// study.js requires study-motion.js, and index.js requires everything (Task 6).
+const order = ["core.js", "palette.js", "ui.js", "point.js", "measure.js", "study-motion.js", "study.js", "index.js"];
 let at = -1;
 for (const f of order) {
   const i = loaderSrc.indexOf(f);
@@ -445,5 +447,65 @@ assert.ok(!/\.type\s*=\s*["']file["']/.test(studyMotionSrc), "no file input in s
 // nothing else in study.js may have changed to make that happen.
 assert.ok(!/notImplemented/.test(studySrc), "study.js no longer returns the stub");
 assert.ok(/studyMotion/.test(studySrc), "study.js's readMotion delegates to study-motion.js");
+
+// ---- Task 6: Study becomes the fourth mode -------------------------------
+
+// index.js must know the study mode and expose both agent-facing entry points.
+assert.ok(/"study"/.test(indexSrc), "index.js knows the study mode");
+for (const api of ["__annotatorStudyTake", "__annotatorStudyPage"]) {
+  assert.ok(indexSrc.indexOf("window." + api) !== -1, "index.js exposes " + api);
+}
+
+// THE guard that matters most with a fourth mode: rewritten as === "off", point mode
+// would start swallowing clicks during Study. Re-checked here (not just at Task 5's
+// spot above) because this is the exact regression Task 6 is most likely to cause.
+const pointGuardsWithStudy = pointSrc.match(/mode\s*!==\s*["']on["']/g) || [];
+assert.ok(pointGuardsWithStudy.length >= 4, "point.js still guards on !== 'on' with four modes, found " + pointGuardsWithStudy.length);
+assert.ok(!/mode\s*===\s*["']off["']/.test(pointSrc), "no === 'off' guards, even with a fourth mode");
+
+// Study must not swallow navigation the way point mode does: only `click` is
+// intercepted, never pointerdown/mousedown/auxclick.
+assert.ok(/addEventListener\(["']click["']/.test(studySrc), "study.js intercepts click");
+assert.ok(!/addEventListener\(["'](?:pointerdown|mousedown|auxclick)["']/.test(studySrc), "study.js does not intercept pointerdown/mousedown/auxclick — studying a site means navigating it");
+
+// THE regression the live browser gate actually caught: onClick guarding on !shiftKey
+// still called preventDefault()/stopPropagation() unconditionally, silently eating every
+// link click in Study mode (contradicting its own comment). Extract onClick's own body
+// (not just "absent anywhere in the file") so a stray preventDefault elsewhere can't hide
+// a real regression here, or a real fix here be masked by one lingering somewhere else.
+function extractFunction(src, name) {
+  var start = src.indexOf("function " + name);
+  if (start === -1) return "";
+  var braceStart = src.indexOf("{", start);
+  var depth = 0, i = braceStart;
+  for (; i < src.length; i++) {
+    if (src[i] === "{") depth++;
+    else if (src[i] === "}") { depth--; if (depth === 0) { i++; break; } }
+  }
+  return src.slice(start, i);
+}
+var studyOnClick = extractFunction(studySrc, "onClick");
+assert.ok(studyOnClick.length > 0, "found study.js's onClick to inspect");
+assert.ok(!/preventDefault|stopPropagation/.test(studyOnClick), "study.js's onClick must never block or swallow the click — a plain link click must still navigate");
+
+// study.js's readMotion wrapper must forward onUpdate to study-motion.js's real
+// readMotion, not drop it — a dropped onUpdate makes take()'s early-resolve path
+// (below) never fire, so every call would silently burn its full ceiling instead
+// of resolving as soon as the real tiers finish (caught live: it "worked" only by
+// accident, via readMotion's returned object being mutated in place regardless).
+assert.ok(/function\s+readMotion\s*\(\s*el\s*,\s*onUpdate\s*\)/.test(studySrc), "study.js's readMotion wrapper accepts onUpdate");
+assert.ok(/studyMotion\.create\(\{\}\)\.readMotion\(el,\s*onUpdate\)/.test(studySrc), "study.js's readMotion wrapper forwards onUpdate to study-motion.js");
+
+// study.js exposes take() — the Promise wrapper around readMotion's async tiers.
+// Without it, __annotatorStudyTake() would hand the agent a permanent
+// {status:"sampling"}/{status:"checking"} for exactly the bundled-library case
+// tier 3 exists to catch.
+assert.ok(/take\s*:\s*take/.test(studySrc), "study.js's create() exposes take()");
+assert.ok(/new Promise/.test(studySrc), "take() wraps readMotion in a Promise");
+assert.ok(/setTimeout/.test(studySrc.slice(studySrc.indexOf("function take"))), "take() has a ceiling so it cannot hang the agent's browser_evaluate call");
+
+// Obligation (b): study-motion.js's rAF patch must use .apply(this, arguments), matching
+// measure.js's identical pattern — safe today only because eval/require are always sloppy.
+assert.ok(/origRaf\.apply\(this,\s*arguments\)/.test(studyMotionSrc), "study-motion.js's rAF patch uses .apply(this, arguments), not a bare call");
 
 console.log("overlay.test: ok");
