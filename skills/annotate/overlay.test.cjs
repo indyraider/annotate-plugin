@@ -544,7 +544,23 @@ function extractFunction(src, name) {
 }
 var studyOnClick = extractFunction(studySrc, "onClick");
 assert.ok(studyOnClick.length > 0, "found study.js's onClick to inspect");
-assert.ok(!/preventDefault|stopPropagation/.test(studyOnClick), "study.js's onClick must never block or swallow the click — a plain link click must still navigate");
+// NARROWED 2026-08-07, deliberately, and this is not a guard weakened to make a
+// test pass. The original rule — onClick must contain no preventDefault or
+// stopPropagation at all — existed because the first version ate every link
+// click and made Study a trap you could not browse out of. That requirement
+// still holds in full for a PLAIN click, and is asserted as such below and in
+// the Alt+click block. What changed is a product decision: Alt+click now pins a
+// link without following it, because otherwise a CTA cannot be captured at all.
+// One held key is the only exception, and the plain path is checked separately
+// rather than by a blanket grep that can no longer distinguish the two.
+assert.ok(/if \(e\.altKey\)/.test(studyOnClick),
+  "the ONLY event-blocking branch in onClick is the Alt+click one");
+// Cut the Alt branch out by its braces and check what is LEFT. An earlier
+// version of this split on the "if (e.altKey)" text, which left the branch's own
+// body in the remainder and made the assertion fail against correct code.
+var plainOnly = studyOnClick.replace(/if \(e\.altKey\) \{[^}]*\}/, "");
+assert.ok(!/preventDefault|stopPropagation/.test(plainOnly),
+  "study.js's onClick must never block or swallow a PLAIN click — a plain link click must still navigate");
 
 // study.js's readMotion wrapper must forward onUpdate to study-motion.js's real
 // readMotion, not drop it — a dropped onUpdate makes take()'s early-resolve path
@@ -880,6 +896,35 @@ assert.strictEqual(core.classifyValue("0 1px 2px black", ["0 1px 2px black", "0 
 // with or without the guard and would prove nothing.
 assert.strictEqual(core.classifyValue("20rem", ["16px", "24px", "32px"]).verdict, "new",
   "rem against a px scale is not comparable — 'new', never a conflict fabricated out of a unit mismatch");
+
+// ---- Alt+click: the only place Study may stop an event ---------------------
+
+// Verified live 2026-08-07: clicking a CTA in Study mode pinned it AND followed
+// the href, and the navigation tore the overlay off the page before anything
+// could be saved. The most-studied element on the web was the one thing this
+// tool could not capture. Matt's call: a held key pins without navigating.
+var studyClick = extractFunction(studySrc, "onClick");
+assert.ok(studyClick.length > 0, "found study.js's onClick to inspect");
+assert.ok(/if \(e\.altKey\) \{ e\.preventDefault\(\); e\.stopPropagation\(\); \}/.test(studyClick),
+  "Alt+click both prevents the default AND stops propagation");
+
+// stopPropagation is not belt-and-braces here. Plenty of sites navigate from
+// their own JS click handler rather than from an href, and preventDefault says
+// nothing to those. Study's listener is on document in the capture phase, so
+// stopping there is what keeps the page still.
+assert.ok(/document\.addEventListener\("click", onClick, true\)/.test(studySrc),
+  "Study's click listener is in the capture phase, which is what makes stopPropagation reach page handlers");
+
+// The un-modified path must stay untouched: browsing a site is how you reach
+// what you want to study, and eating every link click was a Phase 1a bug.
+var plainPath = studyClick.replace(/if \(e\.altKey\) \{[^}]*\}/, "");
+assert.ok(!/preventDefault/.test(plainPath), "a plain click still never prevents the default");
+assert.ok(!/stopPropagation/.test(plainPath), "a plain click still never stops propagation");
+
+// Alt+click must fall through to the SAME pin/unpin body, not fork into a second
+// copy that can forget the favData/lastEl resets.
+assert.strictEqual((studyClick.match(/favData = null/g) || []).length, 2,
+  "one pin path and one unpin path — Alt+click does not add a third copy of the reset");
 
 // ---- The relaxed default, and why it is a product decision ----------------
 

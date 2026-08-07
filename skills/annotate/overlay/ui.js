@@ -88,6 +88,7 @@
       [["Click"], "Leave a comment"],
       [["⌘", "V"], "Paste/drop an image"],
       [["⌘/Ctrl", "↵"], "Save comment"],
+      [["Alt"], "Click without navigating"],
       [["Shift"], "Hold to click through"],
       [["Esc"], "Cancel comment"]
     ].forEach(function (r) {

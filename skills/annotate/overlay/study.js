@@ -339,17 +339,31 @@
 
     // Only `click` is intercepted — unlike point.js, Study leaves
     // pointerdown/mousedown/auxclick alone, because studying a site means
-    // clicking through it to reach the page being studied. This handler pins
-    // the readout on the clicked element but deliberately never calls
-    // preventDefault()/stopPropagation() (Task 6 fix — the first version did,
-    // which silently ate every link click and navigation in Study mode: the
-    // exact regression the guard comment already warned about but the code
-    // didn't honor). Shift+click is the same peek convention point.js uses:
-    // it skips the pin change entirely, leaving the page's own click handling
-    // completely undisturbed either way.
+    // clicking through it to reach the page being studied. A plain click pins
+    // the readout and deliberately never calls preventDefault()/stopPropagation()
+    // (Task 6 fix — the first version did, which silently ate every link click
+    // and navigation in Study mode). Shift+click is the same peek convention
+    // point.js uses: it skips the pin entirely.
+    //
+    // ALT+CLICK is the exception, and it is the whole reason buttons are
+    // studyable at all. Verified live 2026-08-07: clicking a CTA pinned it AND
+    // followed the href, and the navigation tore the overlay off the page before
+    // anything could be saved — so the single most-studied element on the web
+    // was the one thing this tool could not capture. Alt+click pins and holds
+    // the page still. Matt's call, 2026-08-07.
+    //
+    // preventDefault alone is not enough: a link is also reachable by keyboard
+    // and many sites navigate from their own JS click handler rather than the
+    // href, so the event has to be stopped from reaching them too. That is why
+    // this branch is the ONLY place Study is allowed to stop an event, and why
+    // it is gated on a modifier the page cannot see coming.
     function onClick(e) {
       if (e.shiftKey) return;
       if (ui.isOurs(e.target)) return;
+      // Hold the page still, then fall through to the SAME pin/unpin path a
+      // plain click takes — a second branch here would be a second place for
+      // the favData/lastEl reset discipline below to be forgotten.
+      if (e.altKey) { e.preventDefault(); e.stopPropagation(); }
       // lastEl must reset on BOTH branches: it's the mousemove "same target as
       // last time, skip the readout" cache. Left stale after a pin -> unpin,
       // the next mousemove over that SAME element is silently ignored, so the

@@ -128,7 +128,8 @@ comment pins in the other modes.
 
 **Driving it:**
 1. Click **Study** in the toolbar (Setup step 5), or ask Matt to.
-2. Hover previews the readout live; **click an element to pin it** — the panel then stays
+2. Hover previews the readout live; **click an element to pin it** (**Alt+click** if it is a
+   link or button, so the page doesn't navigate away) — the panel then stays
    put while the mouse moves elsewhere, so you can pull the readout after moving on. Either
    Matt clicks the target himself, or you drive it with `browser_click`.
 3. Pull the pinned element's full readout with a `browser_evaluate` that **awaits the
@@ -233,14 +234,16 @@ if you need a real answer for that element.
   the local app. **Not yet exercised through the MCP tool itself** — the boot was verified in
   a directly-driven Chromium, so if `browser_run_code_unsafe` is unavailable or refused, say
   so rather than falling back silently to a path that cannot work.
-- **A link can't be favourited — pinning it also navigates away.** Study deliberately never
-  calls `preventDefault` (making the page inert was a Phase 1a bug, since studying a site
-  means moving through it). The consequence, seen live on 2026-08-07: clicking a CTA pins it
-  *and* follows the href, and the navigation wipes the overlay before you can save anything.
-  So the single most-studied element on any site — the primary button — is the one you can't
-  favourite. Workaround: pin a non-navigating element, or study the button's styles from a
-  page where it isn't a link. There is no modifier that pins without navigating; adding one
-  is an open design decision, not something to improvise.
+- **To study a button or link, hold Alt and click it** (fixed 2026-08-07). A plain click in
+  Study mode pins the element *and* lets the page navigate, because studying a site means
+  moving through it — making the page inert was a Phase 1a bug and must not come back.
+  But that meant the primary CTA, the most-studied element on any site, was the one thing
+  the tool could not capture: the navigation tore the overlay off the page before anything
+  could be saved. **Alt+click pins and holds the page still.** It both prevents the default
+  and stops propagation, because plenty of sites navigate from their own JS click handler
+  rather than an `href`, and preventing the default says nothing to those. This is the only
+  place Study is allowed to stop an event, and `overlay.test.cjs` asserts that the plain path
+  still stops nothing.
 - **First-paint-only effects are missed** — the overlay injects after the page has already
   loaded, so anything that only ever runs once, on initial paint, isn't there to observe.
 - **Shadow DOM isn't walked.** Elements inside a shadow root need separate handling that
