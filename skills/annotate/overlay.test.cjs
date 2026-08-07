@@ -177,10 +177,8 @@ const pointGuards = pointSrc.match(/mode\s*!==\s*["']on["']/g) || [];
 assert.ok(pointGuards.length >= 4, "point.js keeps its mode !== 'on' guards, found " + pointGuards.length);
 assert.ok(!/mode\s*===\s*["']off["']/.test(pointSrc), "no === 'off' guards (breaks with a third mode)");
 
-// No file input, in every module that exists yet. index.js is Task 5's file —
-// checked here too once it lands; until then this loop would ENOENT rather
-// than fail the assertion, which is not the same thing as the guard holding.
-for (const f of ["point.js", "measure.js"]) {
+// No file input, in every module that exists yet.
+for (const f of ["point.js", "measure.js", "index.js"]) {
   const src = fs.readFileSync(MOD(f), "utf8");
   assert.ok(!/\.type\s*=\s*["']file["']/.test(src), "no file input in " + f + " (its chooser jams the agent)");
 }
@@ -206,5 +204,29 @@ assert.strictEqual(typeof point.create, "function", "point exports create");
 
 const measure = require(MOD("measure.js"));
 assert.strictEqual(typeof measure.create, "function", "measure exports create");
+
+const indexSrc = fs.readFileSync(MOD("index.js"), "utf8");
+
+// The four window entry points the skill's watch loop calls. Renaming any of
+// them breaks the agent silently — the poll just never returns anything.
+for (const api of ["__annotatorDrain", "__annotatorWait", "__annotatorPerfTake", "__annotatorReveal"]) {
+  assert.ok(indexSrc.indexOf("window." + api) !== -1, "index.js still exposes " + api);
+}
+
+// The long-poll is woken directly by save(); a poll-interval-bound version
+// would make every comment feel laggy.
+assert.ok(/waiter/.test(indexSrc), "index.js keeps the one-shot waiter");
+assert.ok(/25000/.test(indexSrc), "index.js keeps the 25s long-poll ceiling");
+
+// The idempotent re-inject guard.
+assert.ok(/if\s*\(\s*window\.__annotator\s*\)\s*return/.test(indexSrc), "index.js keeps the re-inject guard");
+
+// The mode cycle must remain off -> on -> measure -> off.
+assert.ok(/"measure"/.test(indexSrc), "index.js knows the measure mode");
+
+// Smoke-require index.js, mirroring the other five modules — a broken
+// relative path or a missing export fails here, not on first injection.
+const indexMod = require(MOD("index.js"));
+assert.strictEqual(typeof indexMod.setup, "function", "index exports setup");
 
 console.log("overlay.test: ok");
