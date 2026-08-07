@@ -255,9 +255,32 @@
   // don't have a distance, they either match or they don't — so it's 0 on exact
   // equality and Infinity otherwise. Infinity is what keeps a non-numeric
   // mismatch from ever being misread as a near-miss conflict below.
+  //
+  // A studied value arrives as the CSS literal the readout produced — "20px",
+  // not 20 — and Number("20px") is NaN, so a unit-bearing value used to fall
+  // straight to the string branch, miss every numeric token in the scale and
+  // come back "new". That is the UNSAFE direction this whole classifier exists
+  // to lean away from: "new" silently adds a second token doing the job of one
+  // the user already has. Only a PURE dimension is unwrapped — "0 8px 30px
+  // rgba(0,0,0,.12)" must stay one opaque string, or a shadow would parse to
+  // the number 0 and start reporting numeric distances to other shadows.
+  var DIMENSION = /^\s*(-?\d*\.?\d+)\s*(px|rem|em|%|ms|s|vh|vw)?\s*$/;
+  function parseDimension(v) {
+    if (typeof v === "number") return isNaN(v) ? null : { n: v, unit: "" };
+    var m = DIMENSION.exec(String(v));
+    return m ? { n: Number(m[1]), unit: m[2] || "" } : null;
+  }
+  // Every numeric read of a scale token goes through this, not bare Number().
+  // A scale is just as likely to be written ["6px","10px","16px"] as [6,10,16],
+  // and one bare Number() left behind is enough to turn the whole comparison
+  // to NaN and hand back the unsafe "new".
+  function toNumber(v) { var d = parseDimension(v); return d ? d.n : NaN; }
   function tokenDistance(value, token) {
-    var a = Number(value), b = Number(token);
-    if (!isNaN(a) && !isNaN(b)) return Math.abs(a - b);
+    var a = parseDimension(value), b = parseDimension(token);
+    // Two explicit but DIFFERENT units aren't comparable without a root font
+    // size we don't have. Infinity says so honestly; treating 1.5rem as 18.5
+    // away from 20px would invent a conflict out of a unit mismatch.
+    if (a && b) return (a.unit && b.unit && a.unit !== b.unit) ? Infinity : Math.abs(a.n - b.n);
     return value === token ? 0 : Infinity;
   }
 
@@ -267,7 +290,7 @@
   function scaleRange(scale) {
     var min = null, max = null;
     for (var i = 0; i < scale.length; i++) {
-      var n = Number(scale[i]);
+      var n = toNumber(scale[i]);
       if (isNaN(n)) continue;
       if (min === null || n < min) min = n;
       if (max === null || n > max) max = n;
@@ -286,7 +309,7 @@
     for (var i = 0; i < scale.length; i++) {
       var d = tokenDistance(value, scale[i]);
       if (best === null || d < best.distance ||
-          (d === best.distance && Number(scale[i]) < Number(best.value))) {
+          (d === best.distance && toNumber(scale[i]) < toNumber(best.value))) {
         best = { value: scale[i], distance: d };
       }
     }
@@ -312,7 +335,7 @@
     // Infinity means the two values don't even compare (non-numeric mismatch) —
     // there is nothing to measure "close" against, so it can only be new.
     if (!nearest || nearest.distance === Infinity) return { verdict: "new", nearest: nearest, suggestion: null };
-    var base = Math.abs(Number(nearest.value));
+    var base = Math.abs(toNumber(nearest.value));
     // A token of 0 breaks distance/base: ANY nonzero distance divided by 0 is
     // Infinity, so a value sitting right next to a 0 token always read as
     // "new" — the unsafe direction, since the whole point of this classifier

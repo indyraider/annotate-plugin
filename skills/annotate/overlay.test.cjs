@@ -815,6 +815,50 @@ assert.ok(/onFavouriteSave/.test(indexSrc), "index.js registers the favourite-sa
 assert.ok(/studyMode\.favourite\(/.test(indexSrc), "index.js's favourite-save handler calls studyMode.favourite()");
 assert.ok(!/studyMode\.favourite/.test(uiSrc), "ui.js never calls studyMode directly");
 
+// ---- Task 4: unit-bearing values reach the classifier as CSS literals ------
+
+// The study readout produces "20px", not 20 — that is the shape the promote
+// procedure in SKILL.md actually feeds in. Number("20px") is NaN, so before
+// this these fell to the string-equality branch and came back "new": the
+// UNSAFE verdict, silently adding a second radius doing 16px's job.
+assert.strictEqual(core.classifyValue("20px", [6, 10, 16, 999]).verdict, "conflict",
+  "'20px' against a scale containing 16 is a conflict — a unit must not turn it into 'new'");
+assert.strictEqual(core.classifyValue("16px", [6, 10, 16]).verdict, "fits",
+  "'16px' matches the token 16 exactly");
+// The unit may be on the SCALE side instead. This scale is deliberately narrow
+// (16/18): a bare Number() on the nearest token yields NaN, which falls through
+// to the scale-RANGE fallback, and a range of 2 makes 25 look far away — "new".
+// A wider scale would be classified correctly by the fallback anyway and so
+// would prove nothing about the line under test.
+assert.strictEqual(core.classifyValue(25, ["16px", "18px"]).verdict, "conflict",
+  "a px-suffixed SCALE is read numerically — not left as NaN for the range fallback to paper over");
+assert.strictEqual(core.classifyValue("1.5rem", ["1rem", "1.25rem", "2rem"]).verdict, "conflict",
+  "rem scales compare on their own terms, no px assumption");
+
+// The zero-token fallback measures against the scale's own SPREAD, so it too
+// has to read units. A "0px" nearest token forces that path; without a unit-aware
+// read the spread computes as 0 and the ratio goes Infinite — "new", the unsafe
+// direction, for a value sitting 1px from a token the user already has.
+assert.strictEqual(core.classifyValue(1, ["0px", "8px"]).verdict, "conflict",
+  "the zero-token spread fallback reads a px-suffixed scale numerically too");
+
+// Only a PURE dimension is unwrapped. A shadow starts with "0", and parsing it
+// numerically would collapse every shadow to 0 and start reporting distances
+// between values that have none.
+assert.strictEqual(core.classifyValue("0 8px 30px rgba(0,0,0,.12)", ["0 1px 2px black", "0 2px 4px black"]).verdict, "new",
+  "a shadow string stays one opaque value — never parsed down to its leading 0");
+assert.strictEqual(core.classifyValue("0 1px 2px black", ["0 1px 2px black", "0 2px 4px black"]).verdict, "fits",
+  "an identical shadow string still fits by exact equality");
+
+// Mismatched units are not comparable without a root font size we don't have.
+// Inventing one would manufacture a conflict out of a unit difference.
+// 20 and 16 are only 4 apart, so dropping the unit guard would call this a
+// conflict between 20rem (320px) and 16px — a collision that does not exist.
+// The numbers are chosen to be CLOSE on purpose: a far-apart pair reads "new"
+// with or without the guard and would prove nothing.
+assert.strictEqual(core.classifyValue("20rem", ["16px", "24px", "32px"]).verdict, "new",
+  "rem against a px scale is not comparable — 'new', never a conflict fabricated out of a unit mismatch");
+
 // ---- Task 3: the seed design-language template ----------------------------
 
 // The template is shipped into OTHER people's projects. Portability is a

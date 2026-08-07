@@ -307,6 +307,75 @@ framework, stack or colour values assumed. Copy it in. **Tell him you created it
 silently add a file to his repo. `overlay.test.cjs` asserts the template stays stack-neutral;
 portability is a product constraint, not a style preference.
 
+## Promote — a favourite becomes a decision
+
+This is the step that makes a design language instead of a scrapbook, and it is the one part
+of this tool where **you must not decide anything.** You lay out the collision and the
+numbers; Matt picks. Work through one favourite at a time.
+
+**1. Find the target document.** Look for his project's existing design doc — a
+`DESIGN-LANGUAGE.md`, `design-system.md`, `STYLE.md`, a design section in the README,
+whatever it's actually called. **That file is the target**, however it's laid out.
+If there genuinely isn't one, copy `templates/design-language.md` in and **tell him you
+created it, and where.** Never add a file to his repo silently.
+
+**2. Get both sides into the same shape.** The classifier compares
+`{ category: [values] }` against `{ category: [values] }` — same keys on both sides. Build
+the study side from the favourite's `element.nonDefault` (`borderRadius` → `radii`, `padding`
+and `gap` → `spacing`, `boxShadow` → `shadows`, `fontSize` → `typeScale`), and the language
+side by reading his document's tables. A category his document has no section for is just an
+empty array — the classifier resolves that to "new" on its own.
+
+**Units are handled, mismatched units are not.** `"20px"` and `20` compare the same; a
+multi-part value like `"0 8px 30px rgba(0,0,0,.12)"` stays one opaque token and can only
+match exactly. But `"20rem"` against a px scale is reported **new**, not conflict — there is
+no root font size to convert with, so a real collision between `20rem` and `320px` will be
+missed. **Convert to one unit before comparing** if his document and the studied site
+disagree.
+
+**3. Run the classifier.** `core.js` is DOM-free, so run it in plain Node — no browser needed:
+```bash
+node -e '
+  const core = require("<this skill dir>/overlay/core.js");
+  const study = { radii: [20], spacing: [16, 24] };            // from the favourite
+  const lang  = { radii: [6, 10, 16, 999], spacing: [4, 8, 16, 24, 32] };  // from his doc
+  console.log(JSON.stringify(core.reconcile(study, lang), null, 2));
+'
+```
+It returns `{ fits, adopt, conflicts }`; every studied value lands in **exactly one** bucket.
+
+**4. `fits` — say nothing.** The value is already in his scale. There is no decision here, and
+narrating it buries the two buckets that do need him.
+
+**5. `adopt` — propose it, and name the section it lands in.** "This card's shadow is
+`0 8px 30px rgb(0 0 0 / .12)`; your Shadows section is empty — add it as the first
+elevation level?" One line, one question.
+
+**6. `conflict` — lay out all three options with the real numbers, and stop.** A conflict is
+a value *close to but not* one he already has, which is the situation where quietly adopting
+it leaves two tokens doing one job. Say it in plain English:
+
+> This card's radius is **20px**. You already have **16px**. Four pixels apart, so you'd end
+> up with two "large corner" radii and no rule for which to use. Three ways to go:
+> - **Adapt** — use your existing 16px and lose the 4px difference. Nothing changes in your system.
+> - **Adopt** — add 20px and retire 16px, updating everywhere 16px is used today.
+> - **Exception** — keep 16px as the rule and record this one as a deliberate exception, with the reason.
+
+**Do not recommend one, do not pick the "obvious" one, do not act on silence.** The
+`suggestion` string in each conflict entry is phrased as a question on purpose. If he doesn't
+answer, the favourite stays a favourite — that is a fine outcome.
+
+**7. Write it into the right section.** Into Radii, under Radii. **Never append to the bottom
+of his document** — a design doc that grows by accretion stops being read, which defeats the
+whole point. Carry two things with every entry: **why** it was chosen and the **source URL**
+from the favourite. A value with no reason is indistinguishable next year from one someone
+typed by accident.
+
+**8. If his document's tokens are asserted by tests** (`tests/design/`, a token snapshot, a
+Tailwind config that mirrors the doc), **say so before you write**, and change them in the
+same commit. Promoting a token and leaving its test red hands him a broken suite for a
+change he approved.
+
 ## Watch loop
 
 Repeat until Matt says done (or the browser closes / evaluate errors):
