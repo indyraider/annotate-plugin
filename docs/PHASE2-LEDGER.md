@@ -53,3 +53,19 @@ disk-injection boot is still unexercised through the tool itself.
 - Row 2 currently holds one line of text for Point and Measure. The spec expects fifteen tools
   eventually; the mechanism is there (`setModeTools(node)`), the tools are not.
 - Queue rows are text only — no status filter, no bulk actions.
+
+## A second defect, found by looking
+
+The toolbar rendered BLACK text on a DARK panel on stripe.com. Cause was in Phase 0's
+palette, not Phase 2: stripe paints its background on a wrapper div, so `html` and `body`
+both compute to `transparent`, the palette fell back to a hard-coded dark surface, and the
+text colour still came from the page. Unreadable chrome on every light site built that way —
+which is ordinary practice, not an edge case.
+
+Fixed by inferring the background from the TEXT colour when the page gives us none (dark text
+means a light page); a real background still wins. 3 sabotage proofs fired. Verified visually
+on stripe (now light), linear (still dark), example.com (unchanged).
+
+**Worth noting how it was found:** every unit test passed, both browser gates passed, and the
+bug was plainly visible the moment a screenshot was opened. Add a look-at-it step to any
+future phase that touches the chrome.
