@@ -249,11 +249,93 @@
     return MOTION_FINGERPRINT_RE.test(basename);
   }
 
+  // Pure: distance between a studied value and one scale token. Numeric on both
+  // sides (the normal px/scale case) -> plain difference. Otherwise (a shadow
+  // string, say) there is no meaningful "close" — two different shadow strings
+  // don't have a distance, they either match or they don't — so it's 0 on exact
+  // equality and Infinity otherwise. Infinity is what keeps a non-numeric
+  // mismatch from ever being misread as a near-miss conflict below.
+  function tokenDistance(value, token) {
+    var a = Number(value), b = Number(token);
+    if (!isNaN(a) && !isNaN(b)) return Math.abs(a - b);
+    return value === token ? 0 : Infinity;
+  }
+
+  // Pure: the scale token nearest a studied value, and how far away it is.
+  function nearestInScale(value, scale) {
+    if (!scale || !scale.length) return null;
+    var best = null;
+    for (var i = 0; i < scale.length; i++) {
+      var d = tokenDistance(value, scale[i]);
+      if (best === null || d < best.distance) best = { value: scale[i], distance: d };
+    }
+    return best;
+  }
+
+  // Pure: fits / new / conflict — the decision the whole reconcile feature
+  // rests on. The asymmetry is deliberate: wrong toward "conflict" costs the
+  // user one decision (adapt to the existing token, or keep both); wrong toward
+  // "new" silently adds a second token doing the same job as one that already
+  // exists, which is how a scale rots. So a borderline case must land on
+  // "conflict" — the new-token cutoff is "MORE THAN `threshold` away", not "at
+  // least `threshold` away".
+  // A scale with fewer than two entries isn't a scale yet — "close to it" isn't
+  // a meaningful claim, so it's forced to "new" rather than manufacturing a
+  // false conflict out of a single existing value.
+  function classifyValue(value, scale, opts) {
+    opts = opts || {};
+    var threshold = opts.threshold != null ? opts.threshold : 0.5;
+    var nearest = nearestInScale(value, scale);
+    if (nearest && nearest.distance === 0) return { verdict: "fits", nearest: nearest, suggestion: null };
+    if (!scale || scale.length < 2) return { verdict: "new", nearest: nearest, suggestion: null };
+    // Infinity means the two values don't even compare (non-numeric mismatch) —
+    // there is nothing to measure "close" against, so it can only be new.
+    if (!nearest || nearest.distance === Infinity) return { verdict: "new", nearest: nearest, suggestion: null };
+    var base = Math.abs(Number(nearest.value));
+    var ratio = base > 0 ? nearest.distance / base : Infinity;
+    if (ratio > threshold) return { verdict: "new", nearest: nearest, suggestion: null };
+    return {
+      verdict: "conflict",
+      nearest: nearest,
+      suggestion: value + " is close to the existing " + nearest.value + " (off by " + nearest.distance +
+        ") — adapt to " + nearest.value + ", or keep both as distinct tokens?"
+    };
+  }
+
+  // Pure: a whole study's readout against the whole design language, bucketed.
+  // Every key the study carries (radii, spacing, shadows, ...) is looked up by
+  // the SAME key in the language; a key the language doesn't have yet is just
+  // an empty scale, which classifyValue already resolves to "new" via its
+  // <2-entries rule — no separate "unknown category" case needed. Every value
+  // must land in exactly one bucket: one that fell through all three would be a
+  // silently lost user decision.
+  function reconcile(study, language, opts) {
+    study = study || {};
+    language = language || {};
+    var out = { fits: [], adopt: [], conflicts: [] };
+    for (var key in study) {
+      if (!Object.prototype.hasOwnProperty.call(study, key)) continue;
+      var values = study[key];
+      if (!values) continue;
+      var scale = language[key] || [];
+      for (var i = 0; i < values.length; i++) {
+        var value = values[i];
+        var result = classifyValue(value, scale, opts);
+        var entry = { key: key, value: value, nearest: result.nearest, suggestion: result.suggestion };
+        if (result.verdict === "fits") out.fits.push(entry);
+        else if (result.verdict === "conflict") out.conflicts.push(entry);
+        else out.adopt.push(entry);
+      }
+    }
+    return out;
+  }
+
   return {
     buildSelector: buildSelector, fitDimensions: fitDimensions,
     classifyRequest: classifyRequest, createPerfBuffer: createPerfBuffer,
     findRscEntry: findRscEntry, tallyValues: tallyValues, detectScale: detectScale,
     defaultsFor: defaultsFor, toTailwind: toTailwind, isRootSelector: isRootSelector,
     isOwnModuleUrl: isOwnModuleUrl, isMotionFingerprintUrl: isMotionFingerprintUrl,
+    nearestInScale: nearestInScale, classifyValue: classifyValue, reconcile: reconcile,
   };
 });

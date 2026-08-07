@@ -661,4 +661,51 @@ assert.ok(/setClickHint/.test(uiSrc), "ui.js exposes a setter for the guide's Cl
 assert.ok(!/mode\s*[!=]==?\s*["'](?:on|study|measure|off)["']/.test(uiSrc), "ui.js still does not branch on mode (Minor 12 must not violate this)");
 assert.ok(/setClickHint/.test(indexSrc), "index.js drives the Click-row text, keeping mode logic out of ui.js");
 
+// ---- Phase 1b: the reconcile classifier ----------------------------------
+
+// nearestInScale — the token a studied value is closest to.
+assert.deepStrictEqual(core.nearestInScale(20, [6, 10, 16, 999]), { value: 16, distance: 4 },
+  "nearest to 20 in 6/10/16/999 is 16");
+assert.deepStrictEqual(core.nearestInScale(16, [6, 10, 16]), { value: 16, distance: 0 },
+  "an exact member has distance 0");
+assert.strictEqual(core.nearestInScale(12, []), null, "empty scale has no nearest");
+
+// classifyValue — the three verdicts.
+assert.strictEqual(core.classifyValue(16, [6, 10, 16, 999]).verdict, "fits",
+  "an exact match fits");
+assert.strictEqual(core.classifyValue(20, [6, 10, 16, 999]).verdict, "conflict",
+  "20 against 16 is a CONFLICT — two radii 4px apart doing the same job is how scales rot");
+assert.strictEqual(core.classifyValue(400, [6, 10, 16]).verdict, "new",
+  "far from everything is a new token, not a conflict");
+assert.strictEqual(core.classifyValue(12, []).verdict, "new",
+  "nothing to conflict with in an empty scale");
+assert.strictEqual(core.classifyValue(12, [8]).verdict, "new",
+  "a scale of one is not yet a scale");
+
+// The asymmetry, asserted directly. Being wrong toward "conflict" costs one
+// decision; being wrong toward "new" silently corrupts the user's scale.
+assert.strictEqual(core.classifyValue(17, [16]).verdict, "new",
+  "single-entry scale still yields new, not conflict");
+assert.strictEqual(core.classifyValue(17, [16, 24, 32]).verdict, "conflict",
+  "17 against an established scale containing 16 is a conflict");
+
+// A conflict must carry a usable suggestion — the 'adapt' option needs a target.
+var c = core.classifyValue(20, [6, 10, 16, 999]);
+assert.strictEqual(c.nearest.value, 16, "conflict names the token it collides with");
+assert.strictEqual(typeof c.suggestion, "string", "conflict carries a suggestion string");
+
+// reconcile — a whole study against a whole language.
+// (named reconcileStudy/reconcileLang — study.js's own module is already
+// bound to `study` above, from Task 2's require)
+var reconcileStudy = { radii: [20], spacing: [16, 24], shadows: ["0 8px 30px rgba(0,0,0,.12)"] };
+var reconcileLang  = { radii: [6, 10, 16, 999], spacing: [4, 8, 16, 24, 32], shadows: [] };
+var r = core.reconcile(reconcileStudy, reconcileLang);
+assert.ok(r.conflicts.length >= 1, "the 20px radius conflicts");
+assert.ok(r.fits.length >= 2, "16 and 24 spacing already fit");
+assert.ok(r.adopt.length >= 1, "the shadow is new — the language has none");
+// Every studied value must appear in exactly one bucket. A value that falls
+// through all three is a silent loss of the user's decision.
+var total = r.fits.length + r.adopt.length + r.conflicts.length;
+assert.strictEqual(total, 4, "every studied value lands in exactly one bucket, got " + total);
+
 console.log("overlay.test: ok");
