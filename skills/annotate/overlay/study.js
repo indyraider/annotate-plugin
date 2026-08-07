@@ -224,11 +224,13 @@
     };
   }
 
-  // Task 4/5 moves motion to its own module (study.js was already past its
-  // line-count guideline). Kept as a stable stub so Task 6 can wire the mode
-  // cycle now without waiting on the rest of the phase — no fake data, just an
-  // honest "not built yet".
-  function readMotion() { return { notImplemented: true }; }
+  // Task 4/5 moved motion detection to its own module (study.js was already
+  // past its line-count guideline) — delegate rather than re-implement.
+  function readMotion(el) {
+    var studyMotion = (typeof module !== "undefined" && module.exports) ? require("./study-motion.js") : (window.__annotatorMods && window.__annotatorMods.studyMotion);
+    if (!studyMotion) throw new Error("annotate: study.js requires study-motion.js to load first");
+    return studyMotion.create({}).readMotion(el);
+  }
 
   // ---- readout panel: our own chrome, styled from the host palette so it
   // looks native wherever it lands. Every element here is created fresh and

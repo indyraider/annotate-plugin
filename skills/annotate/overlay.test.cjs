@@ -391,4 +391,59 @@ assert.strictEqual(core.isRootSelector(""), false, "empty selector");
 // implementation is exactly how these two would drift apart again.
 assert.ok(/isRootSelector\s*=\s*core\.isRootSelector/.test(studySrc), "study.js consumes core.isRootSelector, not a local reimplementation");
 
+// ---- Tasks 4/5: study-motion.js — motion detection, all four tiers --------
+// Plan amendment: this lives in its own module, not study.js — study.js was
+// already past its line-count guideline and reading animations is a separate
+// concern from reading styles. study.js's readMotion stub must now delegate.
+
+const studyMotionSrc = fs.readFileSync(MOD("study-motion.js"), "utf8");
+const studyMotion = require(MOD("study-motion.js"));
+assert.strictEqual(typeof studyMotion.create, "function", "study-motion exports create");
+
+// Tier 1 — getAnimations() is Baseline since 2020 and covers every CSS
+// transition/animation completely, not approximately.
+assert.ok(/getAnimations/.test(studyMotionSrc), "tier 1 uses the getAnimations standard");
+assert.ok(/getKeyframes/.test(studyMotionSrc), "tier 1 reads real keyframes");
+assert.ok(/getTiming/.test(studyMotionSrc), "tier 1 reads real timing");
+
+// Tier 2 — GSAP is the jackpot; ScrollTrigger and Lottie were both confirmed
+// against docs during design.
+assert.ok(/globalTimeline/.test(studyMotionSrc) && /getChildren/.test(studyMotionSrc), "tier 2 enumerates GSAP tweens");
+assert.ok(/ScrollTrigger/.test(studyMotionSrc), "tier 2 reads ScrollTrigger bindings");
+assert.ok(/lottie|bodymovin/i.test(studyMotionSrc), "tier 2 detects Lottie");
+// The GSAP per-tween accessors were unverified at design time — they must be
+// probed, not assumed, or Study throws on a site that uses a different version.
+assert.ok(/typeof\s+\w+\.targets/.test(studyMotionSrc), "GSAP tween accessors are probed defensively");
+assert.ok(/tier/i.test(studyMotionSrc) && /confidence/.test(studyMotionSrc), "motion readout reports its own confidence");
+
+// Tier 3 — detection without detail: a network fingerprint plus a live
+// rAF/MutationObserver correlation, both of which must fully revert.
+assert.ok(/getEntriesByType\(["']resource["']\)/.test(studyMotionSrc), "tier 3 fingerprints from network entries");
+assert.ok(/MutationObserver/.test(studyMotionSrc), "tier 3 watches style mutations");
+assert.ok(/requestAnimationFrame/.test(studyMotionSrc), "tier 3 samples the frame loop");
+// Read-only is the whole promise of Study. A leaked rAF patch slows the page
+// being studied and silently corrupts the thing it is measuring.
+assert.ok(/origRaf|originalRaf/.test(studyMotionSrc), "tier 3 saves the original rAF");
+assert.ok(/disconnect\(\)/.test(studyMotionSrc), "tier 3 disconnects its observer");
+
+// Tier 4 — source maps are detected, not fetched/parsed. That is later work.
+assert.ok(/sourceMappingURL/.test(studyMotionSrc), "tier 4 detects source maps");
+
+// Named dependency error, matching the pattern every other module uses.
+assert.ok(/throw new Error\("annotate: study-motion\.js requires/.test(studyMotionSrc), "named dep error");
+
+// Read-only on the host page: nothing here may write to an existing page node.
+// study-motion.js has no chrome to excise (unlike study.js's createChrome) —
+// it only reads globals/DOM and patches window.requestAnimationFrame, which is
+// a global function reference, not a page node.
+assert.ok(!/\.setAttribute\(|\.innerHTML\s*=|\.remove\(\)/.test(studyMotionSrc),
+  "study-motion.js does not mutate the inspected page");
+
+assert.ok(!/\.type\s*=\s*["']file["']/.test(studyMotionSrc), "no file input in study-motion.js");
+
+// study.js's readMotion must now delegate rather than return the stub, and
+// nothing else in study.js may have changed to make that happen.
+assert.ok(!/notImplemented/.test(studySrc), "study.js no longer returns the stub");
+assert.ok(/studyMotion/.test(studySrc), "study.js's readMotion delegates to study-motion.js");
+
 console.log("overlay.test: ok");
