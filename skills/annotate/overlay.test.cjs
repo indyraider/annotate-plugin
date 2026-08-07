@@ -508,4 +508,44 @@ assert.ok(/setTimeout/.test(studySrc.slice(studySrc.indexOf("function take"))), 
 // measure.js's identical pattern — safe today only because eval/require are always sloppy.
 assert.ok(/origRaf\.apply\(this,\s*arguments\)/.test(studyMotionSrc), "study-motion.js's rAF patch uses .apply(this, arguments), not a bare call");
 
+// ---- Post-approval finding: exclude the overlay's OWN modules from the motion
+// fingerprint ---------------------------------------------------------------
+// The loader fetches every module (including study-motion.js itself) INSIDE the
+// inspected page's JS context, so Resource Timing records them as real entries —
+// on every site, every session. FINGERPRINT_RE's bare "motion" alternative
+// matches "study-motion.js", so without this filter Study reports a spurious
+// "motion library detected" unconditionally. This is a real function called with
+// real cases, not a source-text grep — a grep can't prove the origin/basename
+// logic is right.
+assert.strictEqual(typeof core.isOwnModuleUrl, "function", "core exports isOwnModuleUrl");
+
+assert.strictEqual(
+  core.isOwnModuleUrl("http://127.0.0.1:7788/study-motion.js", "http://127.0.0.1:7788/"),
+  true, "own module served from the boot base is excluded"
+);
+assert.strictEqual(
+  core.isOwnModuleUrl("https://x.com/a/motion.abc.js", "http://127.0.0.1:7788/"),
+  false, "the SITE'S OWN motion bundle, a different origin, is never excluded"
+);
+assert.strictEqual(
+  core.isOwnModuleUrl("https://x.com/js/index.js", "http://127.0.0.1:7788/"),
+  false, "a site file with a colliding basename (index.js) on a DIFFERENT origin is never excluded — basename alone must not disqualify a real site resource"
+);
+assert.strictEqual(
+  core.isOwnModuleUrl("https://cdn.x/gsap.min.js", "http://127.0.0.1:7788/"),
+  false, "gsap from a real CDN is never excluded"
+);
+assert.strictEqual(
+  core.isOwnModuleUrl("https://any.site/whatever.js", null),
+  false, "no boot base -> exclude nothing (an unknown boot origin must never start excluding real site resources)"
+);
+assert.strictEqual(
+  core.isOwnModuleUrl("http://127.0.0.1:7788/js/index.js", "http://127.0.0.1:7788/"),
+  true, "same-origin basename match (index.js under the boot origin, not an exact base-prefix path) is excluded via the secondary guard"
+);
+
+// fingerprintFromNetwork must actually call the filter, not just have it lying
+// around unused in core.js.
+assert.ok(/core\.isOwnModuleUrl/.test(studyMotionSrc), "study-motion.js's fingerprint scan calls core.isOwnModuleUrl");
+
 console.log("overlay.test: ok");

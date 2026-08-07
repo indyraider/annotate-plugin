@@ -208,10 +208,37 @@
     return false;
   }
 
+  // Pure: is this resource URL one of the overlay's OWN modules? The loader
+  // fetches every module (including study-motion.js) INSIDE the inspected
+  // page's JS context, so Resource Timing records them as real entries on the
+  // page being studied — every single session, on every site. study-motion.js's
+  // network fingerprint regex matches the bare word "motion", which matches its
+  // own filename, so without this filter Study reports a spurious "motion
+  // library detected" unconditionally. Primary signal: the URL starts with the
+  // stored boot base (exact match — this is how the loader actually fetches
+  // each file, `base + filename`). Secondary guard, SAME-ORIGIN ONLY: the
+  // module basenames (index.js, core.js, ...) are generic enough that a real
+  // site could legitimately serve one under a different origin, so basename
+  // alone must never disqualify a resource — only when it also shares the boot
+  // origin. No boot base -> always false: an unknown boot origin must never
+  // start excluding real site resources.
+  var OWN_MODULE_FILES = ["core.js", "palette.js", "ui.js", "point.js", "measure.js", "study-motion.js", "study.js", "index.js"];
+  function isOwnModuleUrl(url, bootBase) {
+    if (!bootBase || !url) return false;
+    var u = String(url), base = String(bootBase);
+    if (u.indexOf(base) === 0) return true;
+    var originOf = function (s) { var m = /^[a-z]+:\/\/[^/]+/i.exec(s); return m ? m[0] : null; };
+    var baseOrigin = originOf(base);
+    if (!baseOrigin || originOf(u) !== baseOrigin) return false;
+    var basename = u.split("?")[0].split("/").pop();
+    return OWN_MODULE_FILES.indexOf(basename) !== -1;
+  }
+
   return {
     buildSelector: buildSelector, fitDimensions: fitDimensions,
     classifyRequest: classifyRequest, createPerfBuffer: createPerfBuffer,
     findRscEntry: findRscEntry, tallyValues: tallyValues, detectScale: detectScale,
     defaultsFor: defaultsFor, toTailwind: toTailwind, isRootSelector: isRootSelector,
+    isOwnModuleUrl: isOwnModuleUrl,
   };
 });

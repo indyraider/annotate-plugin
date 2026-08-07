@@ -183,8 +183,20 @@
   function fingerprintFromNetwork() {
     var matches = [];
     try {
+      // The loader fetches every overlay module (including this one) INSIDE the
+      // inspected page's JS context, so Resource Timing records them as real
+      // entries on the page being studied — and the bare "motion" alternative
+      // above matches this file's own name. Without excluding our own modules,
+      // Study would report a spurious "motion library detected" on every site,
+      // every session. core.isOwnModuleUrl needs the boot base for a same-origin
+      // check; falls back to null (excludes nothing) if it isn't set.
+      var bootBase = null;
+      try { bootBase = localStorage.getItem("__ann_boot_url"); } catch (e0) {}
       var entries = performance.getEntriesByType("resource");
-      for (var i = 0; i < entries.length; i++) { if (FINGERPRINT_RE.test(entries[i].name)) matches.push(entries[i].name); }
+      for (var i = 0; i < entries.length; i++) {
+        var name = entries[i].name;
+        if (FINGERPRINT_RE.test(name) && !core.isOwnModuleUrl(name, bootBase)) matches.push(name);
+      }
     } catch (e) {}
     return matches;
   }
