@@ -881,6 +881,25 @@ assert.strictEqual(core.classifyValue("0 1px 2px black", ["0 1px 2px black", "0 
 assert.strictEqual(core.classifyValue("20rem", ["16px", "24px", "32px"]).verdict, "new",
   "rem against a px scale is not comparable — 'new', never a conflict fabricated out of a unit mismatch");
 
+// ---- Phase 2: the chrome must be readable on a page with no background -----
+
+// Found by looking at a screenshot, not by any test: stripe.com paints its
+// background on a wrapper div, so BOTH html and body compute to transparent.
+// The palette used to fall back to a hard-coded dark surface while still taking
+// the text colour from the page — black text on a dark panel, unreadable, on
+// every light site built that way, which is a large share of them.
+// The text colour is the signal that survives when the background does not.
+assert.strictEqual(typeof palette.fallbackBg, "function", "palette exports fallbackBg");
+assert.strictEqual(palette.fallbackBg(0), "rgb(250,250,250)", "black page text means a LIGHT page — never assume dark");
+assert.strictEqual(palette.fallbackBg(0.2), "rgb(250,250,250)", "dark-ish text still means a light page");
+assert.strictEqual(palette.fallbackBg(0.9), "rgb(24,24,27)", "light page text means a dark page");
+assert.strictEqual(palette.fallbackBg(1), "rgb(24,24,27)", "white text means a dark page");
+
+// The fallback is only reached when neither element paints one — a real
+// background must always win over the inference.
+assert.ok(/var bg = bgRaw \|\| fallbackBg\(/.test(paletteSrc), "a real page background takes precedence over the inferred one");
+assert.ok(/pick\(h, "backgroundColor", null\)/.test(paletteSrc), "the background chain bottoms out at null so 'no background' is distinguishable from a dark one");
+
 // ---- Phase 2: the Layout B toolbar ----------------------------------------
 
 // Every control in ui.js is wired through ONE delegated listener on document in
