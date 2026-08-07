@@ -1,6 +1,6 @@
 ---
 name: annotate
-description: Point-and-comment on the live local app, plus a read-only Study mode that reverse-engineers any site's design system. Invoked as /annotate [url]. Opens the Playwright browser, injects an inspect-element-style overlay so Matt can hover, click, and leave comments (each auto-screenshotted), then watches for those comments and fixes them. Study mode (the 4th pill state) works against any URL, not just the local app, and never modifies the page it inspects. Dev tool only — never shipped, exempt from mobile-parity.
+description: Point-and-comment on the live local app, plus a read-only Study mode that reverse-engineers any site's design system. Invoked as /annotate [url]. Opens the Playwright browser, injects an inspect-element-style overlay so Matt can hover, click, and leave comments (each auto-screenshotted), then watches for those comments and fixes them. Study mode (the 4th pill state) works against any URL, not just the local app, and never modifies the page it inspects. Studied elements can be favourited to a design-studies/ library and promoted, through a reconcile step, into the user's own design language. Dev tool only — never shipped, exempt from mobile-parity.
 ---
 
 # /annotate — point-and-comment on the live app
