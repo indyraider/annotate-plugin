@@ -14,10 +14,18 @@ rather than pasted into your context.
 
 1. **URL**: use the `[url]` arg, else `http://localhost:3000`. Assume the dev server
    is already up (Matt keeps `:3000` running — never kill it). If it's not, ask.
-2. **Start the overlay server** (skip if one from earlier in this session is still
-   up): `node ${CLAUDE_PLUGIN_ROOT}/skills/annotate/serve.cjs`. It prints one line of
-   JSON — `{"url":"http://127.0.0.1:PORT/","port":PORT,"root":"..."}` — read that and
-   keep the `url`. It binds to `127.0.0.1` only, never anything beyond your machine.
+2. **Start the overlay server** (skip if one from earlier in this session is still up —
+   reuse it, don't start a second one). `serve.cjs` never exits on its own (it just
+   `listen()`s), so it **must be run in the background**, not as a normal foreground Bash
+   call — a foreground call blocks forever on the very first step. If your harness has a
+   background/async flag on its shell tool, use that. Otherwise:
+   ```bash
+   node ${CLAUDE_PLUGIN_ROOT}/skills/annotate/serve.cjs --port 7788 > /tmp/annotate-serve.log 2>&1 &
+   sleep 1
+   cat /tmp/annotate-serve.log   # -> {"url":"http://127.0.0.1:7788/","port":7788,"root":"..."}
+   ```
+   Read that JSON and keep the `url`. It binds to `127.0.0.1` only, never anything beyond
+   your machine.
 3. **Open the page**: `browser_navigate` to the URL (reuse the existing browser).
 4. **Boot the overlay**: read `overlay.js` from this skill's directory — it's now a
    ~37-line loader, not the implementation — and `browser_evaluate` it, then call
@@ -85,8 +93,10 @@ Repeat until Matt says done (or the browser closes / evaluate errors):
    ```
    async () => {
      if (!window.__annotator) {
+       const bootUrl = localStorage.getItem("__ann_boot_url");
+       if (!bootUrl) return { needReinject: true };
        <contents of overlay.js>
-       await window.__annotatorBoot(localStorage.getItem("__ann_boot_url"));
+       await window.__annotatorBoot(bootUrl);
      }
      if (!window.__annotator) return { needReinject: true };
      const anns = await window.__annotatorWait(25000);
@@ -100,9 +110,19 @@ Repeat until Matt says done (or the browser closes / evaluate errors):
    Node process, not tied to the page) and re-boots against the URL the overlay saved to
    `localStorage["__ann_boot_url"]` on first boot, restoring every annotation and its
    status from the same storage. Playwright awaits the promise; it returns the new
-   annotations (the moment Matt saves one, or `[]` after ~25s). Only if
-   `{ needReinject: true }` comes back (server not reachable, or the URL was never saved)
-   do a full re-inject from scratch (Setup steps 2–4).
+   annotations (the moment Matt saves one, or `[]` after ~25s).
+
+   `{ needReinject: true }` and a **thrown/errored `browser_evaluate` call** are two
+   different signals — don't conflate them:
+   - **`{ needReinject: true }`** means only "no boot URL was ever saved" (fresh page,
+     nothing booted yet this session) — recover by running Setup steps 2–4 from scratch.
+   - **The `browser_evaluate` call itself erroring** (no return value at all) means the
+     `fetch` inside `__annotatorBoot` failed — the server from Setup step 2 is down or
+     unreachable. `boot()` has no `catch` (deliberately — no retry/error-handling logic
+     is built into it), so a dead server surfaces as a rejected promise / tool error, not
+     as `{ needReinject: true }`. Recovery is the same: restart the server and re-run
+     Setup steps 2–4 — don't sit there re-polling waiting for `needReinject` to appear,
+     it won't.
 3. **For each annotation in `anns`** `{ id, n, selector, descriptor, comment, url, hasImage }`:
    - **If `hasImage`, pull Matt's attachment FIRST** — it's the most direct statement of
      what he means. **Never return the image through the poll or a plain evaluate**: a
