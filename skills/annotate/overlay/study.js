@@ -118,10 +118,102 @@
     };
   }
 
-  // Tasks 3 and 4. Kept as a stable stub so Task 6 can wire the mode cycle now
-  // without waiting on the rest of the phase — no fake data, just an honest
-  // "not built yet".
-  function readPage() { return { notImplemented: true }; }
+  // The design system behind the WHOLE page, not one element. readElement tells
+  // you what one card does; this tells you the rules every card on the site
+  // follows — palette by frequency, type scale, spacing on a detected grid,
+  // radii, shadows, and the author's own custom-property tokens if they used any.
+  var PAGE_CAP = 8000;
+  var PAGE_SPACING_PROPS = ["gap", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
+                             "marginTop", "marginRight", "marginBottom", "marginLeft"];
+
+  // rgba(0, 0, 0, 0) / "transparent" are the computed values for "no colour set" —
+  // counting them would report the page's biggest "colour" as invisible.
+  function isOpaqueColor(v) { return !!v && v !== "rgba(0, 0, 0, 0)" && v !== "transparent"; }
+
+  // :root's own custom properties — the author's own design tokens, named by the
+  // author, wherever declared (including inside @media/@supports/@layer, e.g. a
+  // dark-mode override). Same guard discipline as matchedRules/walkRules above:
+  // a cross-origin stylesheet throws on .cssRules, a malformed rule can throw on
+  // .style access — either must cost one rule, never the whole readout.
+  function collectRootProps(rules, depth, out) {
+    if (!rules || depth > 4) return;
+    for (var i = 0; i < rules.length; i++) {
+      var rule = rules[i];
+      if (rule.selectorText === ":root" || rule.selectorText === "html") {
+        try {
+          var style = rule.style;
+          for (var j = 0; j < style.length; j++) {
+            var prop = style[j];
+            if (prop.indexOf("--") === 0) out[prop] = style.getPropertyValue(prop).trim();
+          }
+        } catch (e) { /* one malformed rule, not the whole walk */ }
+        continue;
+      }
+      var nested = null;
+      try { nested = rule.cssRules || (rule.styleSheet && rule.styleSheet.cssRules); } catch (e2) { nested = null; }
+      if (nested) collectRootProps(nested, depth + 1, out);
+    }
+  }
+
+  function readCustomProps() {
+    var out = {};
+    var sheets = document.styleSheets;
+    for (var i = 0; i < sheets.length; i++) {
+      var rules;
+      try { rules = sheets[i].cssRules; } catch (e) { continue; }
+      if (!rules) continue;
+      collectRootProps(rules, 0, out);
+    }
+    var inline = document.documentElement.style;
+    for (var k = 0; k < inline.length; k++) {
+      var prop = inline[k];
+      if (prop.indexOf("--") === 0) out[prop] = inline.getPropertyValue(prop).trim();
+    }
+    return out;
+  }
+
+  // Read-only: getComputedStyle never mutates anything it reads. Capped at
+  // PAGE_CAP elements — a silent cap would report a large site's design system
+  // as if it were the whole picture with no way to tell; elementsScanned and
+  // truncated report the real count either way, honestly, every time.
+  function readPage() {
+    var els = document.querySelectorAll("*");
+    var n = Math.min(els.length, PAGE_CAP);
+    var colors = [], sizes = [], weights = [], fonts = [], spacingNums = [], radii = [], shadows = [];
+
+    for (var i = 0; i < n; i++) {
+      var cs = getComputedStyle(els[i]);
+      if (isOpaqueColor(cs.color)) colors.push(cs.color);
+      if (isOpaqueColor(cs.backgroundColor)) colors.push(cs.backgroundColor);
+      if (cs.fontSize) sizes.push(cs.fontSize);
+      if (cs.fontWeight) weights.push(cs.fontWeight);
+      if (cs.fontFamily) fonts.push(cs.fontFamily);
+      for (var p = 0; p < PAGE_SPACING_PROPS.length; p++) {
+        var v = parseFloat(cs[PAGE_SPACING_PROPS[p]]);
+        if (!isNaN(v) && v > 0) spacingNums.push(v);
+      }
+      if (cs.borderRadius && cs.borderRadius !== "0px") radii.push(cs.borderRadius);
+      if (cs.boxShadow && cs.boxShadow !== "none") shadows.push(cs.boxShadow);
+    }
+
+    return {
+      palette: core.tallyValues(colors),
+      typeScale: core.tallyValues(sizes),
+      weights: core.tallyValues(weights),
+      fonts: core.tallyValues(fonts),
+      spacing: core.detectScale(spacingNums),
+      radii: core.tallyValues(radii),
+      shadows: core.tallyValues(shadows),
+      customProps: readCustomProps(),
+      elementsScanned: n,
+      truncated: els.length > PAGE_CAP
+    };
+  }
+
+  // Task 4/5 moves motion to its own module (study.js was already past its
+  // line-count guideline). Kept as a stable stub so Task 6 can wire the mode
+  // cycle now without waiting on the rest of the phase — no fake data, just an
+  // honest "not built yet".
   function readMotion() { return { notImplemented: true }; }
 
   // ---- readout panel: our own chrome, styled from the host palette so it

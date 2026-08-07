@@ -351,4 +351,15 @@ for (const f of ["study.js"]) {
   assert.ok(!/\.type\s*=\s*["']file["']/.test(src), "no file input in " + f);
 }
 
+// ---- Task 3: study.js — the whole-page sweep -----------------------------
+// readPage() is the design system behind the whole page, not one element:
+// palette/type-scale/weights/fonts by frequency, spacing on a detected grid,
+// radii/shadows, and any custom properties the author declared as tokens.
+
+assert.ok(/8000/.test(studySrc), "page sweep caps element count");
+assert.ok(/truncated/.test(studySrc), "page sweep reports truncation — silent caps have cost this project before");
+assert.ok(/detectScale/.test(studySrc), "page sweep runs grid detection");
+assert.ok(/tallyValues/.test(studySrc), "page sweep frequency-ranks values");
+assert.ok(/--/.test(studySrc) && /customProps|customProperties/.test(studySrc), "page sweep collects CSS custom properties");
+
 console.log("overlay.test: ok");
