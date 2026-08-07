@@ -68,6 +68,10 @@
         uiHandles.setPillLabel("○ Annotate: OFF" + (c ? " · " + c : ""), pal.surface2, pal.text2);
         uiHandles.setClickHint("Leave a comment");
       }
+      // The favourite note/tag input only makes sense while Study is active —
+      // ui.js owns no mode state (see the guard test), so this decision, like
+      // the click-hint text above, lives here.
+      uiHandles.setFavouriteVisible(m === "study");
     }
 
     // off -> on -> measure -> study -> off. point mode (crosshair/highlight/inspector)
@@ -83,6 +87,14 @@
       updatePill();
     }
     uiHandles.pill.addEventListener("click", toggle);
+
+    // ui.js only knows it collected a note and a comma-separated tags string —
+    // it has no idea a "study mode" or a "favourite" concept exists. index.js
+    // is the one that turns that into the real pin-and-record action below.
+    uiHandles.onFavouriteSave(function (note, tagsText) {
+      var tags = tagsText ? tagsText.split(",").map(function (t) { return t.trim(); }).filter(function (t) { return t.length > 0; }) : [];
+      studyMode.favourite(note, tags);
+    });
 
     // Alt+A must be attached UNCONDITIONALLY, not inside point mode's enable()/
     // disable() bracket — mode is "off" (point mode disabled) at the exact
@@ -114,6 +126,10 @@
     // placeholder); page() is fully synchronous already, so no Promise wrapping needed.
     window.__annotatorStudyTake = function () { return studyMode.take(); };
     window.__annotatorStudyPage = function () { return studyMode.readPage(); };
+    // Same Promise contract as __annotatorStudyTake — takeFavourite() reuses
+    // take() under the hood, so this can never hand back a permanent
+    // {status:"sampling"} placeholder either.
+    window.__annotatorStudyFavourite = function () { return studyMode.takeFavourite(); };
 
     updatePill();
     console.log("[annotate] overlay ready — Alt+A toggle · hover = inspect · Shift = click-through · ⌘V attaches an image · ? = shortcuts");

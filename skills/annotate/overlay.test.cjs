@@ -661,4 +661,264 @@ assert.ok(/setClickHint/.test(uiSrc), "ui.js exposes a setter for the guide's Cl
 assert.ok(!/mode\s*[!=]==?\s*["'](?:on|study|measure|off)["']/.test(uiSrc), "ui.js still does not branch on mode (Minor 12 must not violate this)");
 assert.ok(/setClickHint/.test(indexSrc), "index.js drives the Click-row text, keeping mode logic out of ui.js");
 
-console.log("overlay.test: ok");
+// ---- Phase 1b: the reconcile classifier ----------------------------------
+
+// nearestInScale — the token a studied value is closest to.
+assert.deepStrictEqual(core.nearestInScale(20, [6, 10, 16, 999]), { value: 16, distance: 4 },
+  "nearest to 20 in 6/10/16/999 is 16");
+assert.deepStrictEqual(core.nearestInScale(16, [6, 10, 16]), { value: 16, distance: 0 },
+  "an exact member has distance 0");
+assert.strictEqual(core.nearestInScale(12, []), null, "empty scale has no nearest");
+
+// classifyValue — the three verdicts.
+assert.strictEqual(core.classifyValue(16, [6, 10, 16, 999]).verdict, "fits",
+  "an exact match fits");
+assert.strictEqual(core.classifyValue(20, [6, 10, 16, 999]).verdict, "conflict",
+  "20 against 16 is a CONFLICT — two radii 4px apart doing the same job is how scales rot");
+assert.strictEqual(core.classifyValue(400, [6, 10, 16]).verdict, "new",
+  "far from everything is a new token, not a conflict");
+assert.strictEqual(core.classifyValue(12, []).verdict, "new",
+  "nothing to conflict with in an empty scale");
+assert.strictEqual(core.classifyValue(12, [8]).verdict, "new",
+  "a scale of one is not yet a scale");
+
+// The asymmetry, asserted directly. Being wrong toward "conflict" costs one
+// decision; being wrong toward "new" silently corrupts the user's scale.
+assert.strictEqual(core.classifyValue(17, [16]).verdict, "new",
+  "single-entry scale still yields new, not conflict");
+assert.strictEqual(core.classifyValue(17, [16, 24, 32]).verdict, "conflict",
+  "17 against an established scale containing 16 is a conflict");
+
+// A conflict must carry a usable suggestion — the 'adapt' option needs a target.
+var c = core.classifyValue(20, [6, 10, 16, 999]);
+assert.strictEqual(c.nearest.value, 16, "conflict names the token it collides with");
+assert.strictEqual(typeof c.suggestion, "string", "conflict carries a suggestion string");
+
+// reconcile — a whole study against a whole language.
+// (named reconcileStudy/reconcileLang — study.js's own module is already
+// bound to `study` above, from Task 2's require)
+var reconcileStudy = { radii: [20], spacing: [16, 24], shadows: ["0 8px 30px rgba(0,0,0,.12)"] };
+var reconcileLang  = { radii: [6, 10, 16, 999], spacing: [4, 8, 16, 24, 32], shadows: [] };
+var r = core.reconcile(reconcileStudy, reconcileLang);
+assert.ok(r.conflicts.length >= 1, "the 20px radius conflicts");
+assert.ok(r.fits.length >= 2, "16 and 24 spacing already fit");
+assert.ok(r.adopt.length >= 1, "the shadow is new — the language has none");
+// Every studied value must appear in exactly one bucket. A value that falls
+// through all three is a silent loss of the user's decision.
+var total = r.fits.length + r.adopt.length + r.conflicts.length;
+assert.strictEqual(total, 4, "every studied value lands in exactly one bucket, got " + total);
+
+// ---- Fix wave: zero-token ratio + non-array reconcile values -------------
+// Caught in review: nearestInScale's first-seen tie-break made the SAME value
+// against the SAME scale (just reordered) classify differently, and
+// classifyValue's distance/base ratio went to Infinity whenever the nearest
+// token was 0 — always "new", the unsafe direction the whole asymmetry rule
+// exists to avoid.
+
+assert.deepStrictEqual(core.nearestInScale(2, [0, 4]), core.nearestInScale(2, [4, 0]),
+  "nearest is order-independent (ties break on the smaller token, not array position)");
+
+assert.strictEqual(
+  core.classifyValue(2, [0, 4, 8, 16, 24]).verdict,
+  core.classifyValue(2, [4, 8, 16, 24, 0]).verdict,
+  "classifyValue verdict is order-independent even when the nearest token is 0"
+);
+
+assert.strictEqual(core.classifyValue(0.01, [0, 10]).verdict, "conflict",
+  "a value essentially AT 0 must not read as 'new' just because dividing by a 0 token blows up the ratio");
+
+// reconcile: a scalar (non-array) study value must not silently vanish.
+var scalarResult = core.reconcile({ opacity: 0.5 }, {});
+var scalarTotal = scalarResult.fits.length + scalarResult.adopt.length + scalarResult.conflicts.length;
+assert.strictEqual(scalarTotal, 1, "a scalar study value lands in exactly one bucket, not dropped");
+
+// reconcile: a bare string must be treated as ONE token, not shredded into one
+// entry per character (a string has .length too, which is what caused this).
+var stringResult = core.reconcile({ shadowLabel: "abc" }, {});
+var stringTotal = stringResult.fits.length + stringResult.adopt.length + stringResult.conflicts.length;
+assert.strictEqual(stringTotal, 1, "a bare string study value is ONE token, not one entry per character");
+
+// ---- Task 2: Favouriting in Study mode ------------------------------------
+
+// study.create() itself touches no DOM (only enable() does, via createChrome),
+// so this is a real behavioral check, not a source-text grep: call it for
+// real and inspect the returned handles.
+var studyCtx = { pal: {}, ui: { isOurs: function () { return false; } } };
+var studyHandles = study.create(studyCtx);
+assert.strictEqual(typeof studyHandles.favourite, "function", "study.create() exposes favourite()");
+assert.strictEqual(typeof studyHandles.takeFavourite, "function", "study.create() exposes takeFavourite()");
+
+// Nothing is pinned in a fresh create() (enable() was never called) — calling
+// favourite() must not throw, and must not fabricate a record with nothing to
+// attach it to.
+assert.strictEqual(studyHandles.favourite("a note", ["x"]), null, "favourite() is a no-op (returns null) when nothing is pinned");
+
+// takeFavourite() must return a real Promise — never undefined, never a
+// synchronous value — and it must resolve to null (not reject) when nothing
+// is pinned. This exercises the exact early-return path take() already uses,
+// with no DOM access required.
+var favPromise = studyHandles.takeFavourite();
+assert.ok(favPromise instanceof Promise, "takeFavourite() returns a Promise");
+
+// favourite(note, tags) must take exactly two parameters — no third `url`
+// parameter a caller could use to override capture-time location.href.
+assert.ok(/function favourite\s*\(\s*note,\s*tags\s*\)/.test(studySrc),
+  "favourite(note, tags) takes exactly two params — no url parameter");
+
+// Both favourite() and takeFavourite() must source url from location.href
+// directly, inside the module — never accept it as an argument.
+var favouriteBody = extractFunction(studySrc, "favourite");
+var takeFavouriteBody = extractFunction(studySrc, "takeFavourite");
+assert.ok(favouriteBody.length > 0, "found study.js's favourite() to inspect");
+assert.ok(takeFavouriteBody.length > 0, "found study.js's takeFavourite() to inspect");
+// Split into two independent assertions (not one OR) — an OR is satisfied by
+// either side alone, so it would stay green if a future change dropped
+// location.href from JUST takeFavourite()'s fallback, which is the path taken
+// every time a user pins an element and calls takeFavourite() without first
+// clicking Save favourite. That path losing url silently is exactly the
+// failure this field's "never optional" requirement exists to prevent.
+assert.ok(/location\.href/.test(favouriteBody),
+  "favourite() captures url from location.href inside the module, not passed in");
+assert.ok(/location\.href/.test(takeFavouriteBody),
+  "takeFavourite()'s no-favourite-yet fallback captures url from location.href inside the module, not passed in");
+
+// takeFavourite() must REUSE take()'s existing Promise/ceiling machinery, not
+// re-implement it — a fresh `new Promise`/`setTimeout` here would mean the
+// motion sample is redone from scratch, ungated by take()'s 3s ceiling.
+assert.ok(/\btake\(\)/.test(takeFavouriteBody), "takeFavourite() calls take(), reusing its existing path");
+assert.ok(!/new Promise/.test(takeFavouriteBody), "takeFavourite() does not re-implement take()'s Promise wrapping");
+assert.ok(!/setTimeout/.test(takeFavouriteBody), "takeFavourite() does not re-implement take()'s ceiling timer");
+
+// study.js's create() must return both as real handles (source-text, mirroring
+// the existing take() check above it).
+assert.ok(/favourite:\s*favourite/.test(studySrc), "study.js's create() exposes favourite in its return object");
+assert.ok(/takeFavourite:\s*takeFavourite/.test(studySrc), "study.js's create() exposes takeFavourite in its return object");
+
+// index.js must expose the agent-facing entry point, wired to takeFavourite()
+// (not to favourite(), and not a bare re-export with the wrong arity).
+assert.ok(indexSrc.indexOf("window.__annotatorStudyFavourite") !== -1, "index.js exposes __annotatorStudyFavourite");
+assert.ok(/window\.__annotatorStudyFavourite\s*=\s*function\s*\(\s*\)\s*{\s*return\s+studyMode\.takeFavourite\(\)\s*;?\s*}/.test(indexSrc),
+  "__annotatorStudyFavourite forwards to studyMode.takeFavourite()");
+
+// ui.js gains a generic note/tag input — exposed as handles, not as a
+// mode-aware branch. The existing "no mode branching" assertions above
+// already re-run against this same uiSrc, so a violation here fails them too;
+// these two additionally prove the new handles are real, not just absent
+// mode-checks.
+assert.ok(/setFavouriteVisible\s*:/.test(uiSrc), "ui.js exposes setFavouriteVisible, mirroring setClickHint's show/hide-from-outside pattern");
+assert.ok(/onFavouriteSave\s*:/.test(uiSrc), "ui.js exposes onFavouriteSave so index.js can wire the note/tag submit without ui.js knowing about study mode");
+
+// index.js is the one that decides visibility and wires the callback through
+// to studyMode.favourite() — ui.js must never call studyMode itself.
+assert.ok(/setFavouriteVisible/.test(indexSrc), "index.js drives favourite-panel visibility, keeping mode logic out of ui.js");
+assert.ok(/onFavouriteSave/.test(indexSrc), "index.js registers the favourite-save handler");
+assert.ok(/studyMode\.favourite\(/.test(indexSrc), "index.js's favourite-save handler calls studyMode.favourite()");
+assert.ok(!/studyMode\.favourite/.test(uiSrc), "ui.js never calls studyMode directly");
+
+// ---- Task 4: unit-bearing values reach the classifier as CSS literals ------
+
+// The study readout produces "20px", not 20 — that is the shape the promote
+// procedure in SKILL.md actually feeds in. Number("20px") is NaN, so before
+// this these fell to the string-equality branch and came back "new": the
+// UNSAFE verdict, silently adding a second radius doing 16px's job.
+assert.strictEqual(core.classifyValue("20px", [6, 10, 16, 999]).verdict, "conflict",
+  "'20px' against a scale containing 16 is a conflict — a unit must not turn it into 'new'");
+assert.strictEqual(core.classifyValue("16px", [6, 10, 16]).verdict, "fits",
+  "'16px' matches the token 16 exactly");
+// The unit may be on the SCALE side instead. This scale is deliberately narrow
+// (16/18): a bare Number() on the nearest token yields NaN, which falls through
+// to the scale-RANGE fallback, and a range of 2 makes 25 look far away — "new".
+// A wider scale would be classified correctly by the fallback anyway and so
+// would prove nothing about the line under test.
+assert.strictEqual(core.classifyValue(25, ["16px", "18px"]).verdict, "conflict",
+  "a px-suffixed SCALE is read numerically — not left as NaN for the range fallback to paper over");
+assert.strictEqual(core.classifyValue("1.5rem", ["1rem", "1.25rem", "2rem"]).verdict, "conflict",
+  "rem scales compare on their own terms, no px assumption");
+
+// The zero-token fallback measures against the scale's own SPREAD, so it too
+// has to read units. A "0px" nearest token forces that path; without a unit-aware
+// read the spread computes as 0 and the ratio goes Infinite — "new", the unsafe
+// direction, for a value sitting 1px from a token the user already has.
+assert.strictEqual(core.classifyValue(1, ["0px", "8px"]).verdict, "conflict",
+  "the zero-token spread fallback reads a px-suffixed scale numerically too");
+
+// Only a PURE dimension is unwrapped. A shadow starts with "0", and parsing it
+// numerically would collapse every shadow to 0 and start reporting distances
+// between values that have none.
+assert.strictEqual(core.classifyValue("0 8px 30px rgba(0,0,0,.12)", ["0 1px 2px black", "0 2px 4px black"]).verdict, "new",
+  "a shadow string stays one opaque value — never parsed down to its leading 0");
+assert.strictEqual(core.classifyValue("0 1px 2px black", ["0 1px 2px black", "0 2px 4px black"]).verdict, "fits",
+  "an identical shadow string still fits by exact equality");
+
+// Mismatched units are not comparable without a root font size we don't have.
+// Inventing one would manufacture a conflict out of a unit difference.
+// 20 and 16 are only 4 apart, so dropping the unit guard would call this a
+// conflict between 20rem (320px) and 16px — a collision that does not exist.
+// The numbers are chosen to be CLOSE on purpose: a far-apart pair reads "new"
+// with or without the guard and would prove nothing.
+assert.strictEqual(core.classifyValue("20rem", ["16px", "24px", "32px"]).verdict, "new",
+  "rem against a px scale is not comparable — 'new', never a conflict fabricated out of a unit mismatch");
+
+// ---- Task 5: absent values are not design decisions ------------------------
+
+// Found in the real browser run, not by reading: getComputedStyle answers every
+// property whether the author set it or not, so a studied card came back with
+// boxShadow "none" and paddingTop "0px" and the promote step duly offered to
+// adopt `shadow: none` into the user's design language. Filtering happens at
+// the caller, so the helper has to be right about both directions.
+["none", "normal", "auto", "0", "0px", "0%", "0s", "transparent", "rgba(0, 0, 0, 0)", "", null, undefined]
+  .forEach(function (v) {
+    assert.strictEqual(core.isAbsentValue(v), true, JSON.stringify(v) + " is the absence of a decision, not one");
+  });
+
+// Real values must survive — a filter that eats them loses the user's decision,
+// which is the failure this whole phase is built to prevent. "0 1px 2px black"
+// starts with a zero and must NOT be mistaken for the absent "0".
+["12px", "0 1px 2px black", "1.5rem", "600", "#fff", "rgb(0, 0, 0)", "cubic-bezier(.2,.8,.2,1)"]
+  .forEach(function (v) {
+    assert.strictEqual(core.isAbsentValue(v), false, JSON.stringify(v) + " is a real value and must survive the filter");
+  });
+
+// ---- Task 3: the seed design-language template ----------------------------
+
+// The template is shipped into OTHER people's projects. Portability is a
+// product constraint: anything specific to the project this tool grew up in
+// (Tideswell) leaking into the seed would hand a stranger our tokens as if
+// they were their own decisions.
+const templateSrc = fs.readFileSync(path.join(__dirname, "templates", "design-language.md"), "utf8");
+
+[/--surface-/, /--coral/, /glass-edge/, /Tailwaters/i, /Tideswell/i].forEach(function (pattern) {
+  assert.ok(!pattern.test(templateSrc), "seed template is stack-neutral: contains no " + pattern.source);
+});
+
+// The no-Tideswell-tokens check above is satisfied by an EMPTY file, so it
+// only means something alongside proof the template is actually the document
+// it claims to be. Both halves have to hold.
+["Principles", "Colour", "Spacing & grid", "Typography", "Radii", "Shadows", "Motion", "Components"].forEach(function (section) {
+  assert.ok(templateSrc.indexOf("## " + section) !== -1, "seed template has a '" + section + "' section");
+});
+
+// Every section carries the explicit not-yet-decided marker — a blank section
+// and a section nobody has got to yet are indistinguishable without it, and
+// the whole point of the seed is that an unfilled slot reads as unfilled.
+assert.ok((templateSrc.match(/\*\*Not yet decided\.\*\*/g) || []).length >= 8,
+  "seed template marks every section 'Not yet decided'");
+
+// The template is only reachable through SKILL.md — an unreferenced file in a
+// skill directory is a file an executing agent never finds.
+const skillSrc = fs.readFileSync(path.join(__dirname, "SKILL.md"), "utf8");
+assert.ok(skillSrc.indexOf("templates/design-language.md") !== -1,
+  "SKILL.md points at the seed template by path");
+assert.ok(/__annotatorStudyFavourite/.test(skillSrc),
+  "SKILL.md documents the favourite entry point");
+
+Promise.all([
+  favPromise.then(function (v) {
+    assert.strictEqual(v, null, "takeFavourite() resolves null (not undefined, not rejected) when nothing is pinned");
+  })
+]).then(function () {
+  console.log("overlay.test: ok");
+}).catch(function (e) {
+  console.error(e);
+  process.exitCode = 1;
+});

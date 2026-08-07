@@ -1,6 +1,6 @@
 ---
 name: annotate
-description: Point-and-comment on the live local app, plus a read-only Study mode that reverse-engineers any site's design system. Invoked as /annotate [url]. Opens the Playwright browser, injects an inspect-element-style overlay so Matt can hover, click, and leave comments (each auto-screenshotted), then watches for those comments and fixes them. Study mode (the 4th pill state) works against any URL, not just the local app, and never modifies the page it inspects. Dev tool only — never shipped, exempt from mobile-parity.
+description: Point-and-comment on the live local app, plus a read-only Study mode that reverse-engineers any site's design system. Invoked as /annotate [url]. Opens the Playwright browser, injects an inspect-element-style overlay so Matt can hover, click, and leave comments (each auto-screenshotted), then watches for those comments and fixes them. Study mode (the 4th pill state) works against any URL, not just the local app, and never modifies the page it inspects. Studied elements can be favourited to a design-studies/ library and promoted, through a reconcile step, into the user's own design language. Dev tool only — never shipped, exempt from mobile-parity.
 ---
 
 # /annotate — point-and-comment on the live app
@@ -188,12 +188,46 @@ if you need a real answer for that element.
 **Honest limits — report these, don't paper over them:**
 - **Illustrations/images** yield dimensions, URL, and placement — never the artwork itself.
   That's an asset, not a style; no inspector reconstructs it.
-- **Content-Security-Policy is an open problem, not a solved one.** The overlay boots via
-  an in-page `eval` plus a `fetch` back to `127.0.0.1`; a page whose `script-src` lacks
-  `'unsafe-eval'`, or whose `connect-src` blocks localhost, refuses the overlay entirely —
-  Study can't run there at all. This matters more for Study than any other mode, because
-  the sites most worth studying are exactly the ones most likely to ship a strict CSP. If
-  the overlay fails to boot on a target site, say so plainly rather than guessing why.
+- **Booting on a public site: it is not CSP, it is Local Network Access** (measured
+  2026-08-07 — this bullet previously blamed CSP and was wrong). Two separate things were
+  conflated:
+  - **CSP does not block the overlay.** `browser_evaluate` runs over CDP, which Chromium
+    exempts from page CSP. All eight modules eval and boot cleanly on `github.com`, whose
+    policy is `default-src 'none'` with no `'unsafe-eval'` — `__annotator` comes up live and
+    `__annotatorStudyPage()` returns the real sweep, with no console errors.
+  - **The `fetch` to `127.0.0.1` is what fails, and CSP is not why.** It fails identically on
+    a page with *no CSP at all* and on a plain-`http` page. Chrome says: *"blocked by CORS
+    policy: Permission was denied for this request to access the `loopback` address space"* —
+    Chrome's Local Network Access permission, which a public origin cannot get without a user
+    prompt no automated browser can answer. `Page.setBypassCSP` and a context created with
+    `bypassCSP: true` **both fail to help**, precisely because the block is not CSP.
+    From a local origin (`http://localhost:3000`) the same fetch returns 200 — which is why
+    this never showed up against the dev app.
+
+  **The escape hatch, verified working:** skip the fetch. Read `overlay/*.js` from disk in the
+  Playwright process and evaluate each in order — no network request, so there is nothing left
+  to block. Costs no context tokens either, same as the server.
+  ```
+  browser_run_code_unsafe({ code: `async (page) => {
+    const fs = await import("node:fs/promises");
+    const dir = "<this skill's directory>/overlay";
+    for (const f of ["core.js","palette.js","ui.js","point.js","measure.js","study-motion.js","study.js","index.js"])
+      await page.evaluate(await fs.readFile(dir + "/" + f, "utf8"));
+    return await page.evaluate(() => { window.__annotatorMods.index.setup(); return "ready"; });
+  }` })
+  ```
+  Use this whenever the target is a public site; Setup's `__annotatorBoot` path is fine for
+  the local app. **Not yet exercised through the MCP tool itself** — the boot was verified in
+  a directly-driven Chromium, so if `browser_run_code_unsafe` is unavailable or refused, say
+  so rather than falling back silently to a path that cannot work.
+- **A link can't be favourited — pinning it also navigates away.** Study deliberately never
+  calls `preventDefault` (making the page inert was a Phase 1a bug, since studying a site
+  means moving through it). The consequence, seen live on 2026-08-07: clicking a CTA pins it
+  *and* follows the href, and the navigation wipes the overlay before you can save anything.
+  So the single most-studied element on any site — the primary button — is the one you can't
+  favourite. Workaround: pin a non-navigating element, or study the button's styles from a
+  page where it isn't a link. There is no modifier that pins without navigating; adding one
+  is an open design decision, not something to improvise.
 - **First-paint-only effects are missed** — the overlay injects after the page has already
   loaded, so anything that only ever runs once, on initial paint, isn't there to observe.
 - **Shadow DOM isn't walked.** Elements inside a shadow root need separate handling that
@@ -204,6 +238,158 @@ if you need a real answer for that element.
 - **GSAP's per-tween accessors (`.targets()`, `.vars`) are probed with `typeof`, never
   assumed.** An older GSAP version without them yields a tween count with less per-tween
   detail — report that honestly as "less detail available," not as "no animation found."
+
+## Favourites — the study library
+
+Study answers "what is this?". A **favourite** is Matt saying "I want this." It saves the
+pinned element's readout, his note and tags, and the URL it came from, into a
+`design-studies/` directory **in his own project** — files he owns, not a tool-owned store.
+
+**Driving it:** with an element pinned in Study mode, Matt types a note and tags in the
+Study panel and hits Save; or you pull it yourself:
+```
+async () => await window.__annotatorStudyFavourite()
+```
+**It returns a Promise — `await` it** (same reason as `__annotatorStudyTake()`: the motion
+tiers fill in asynchronously). It resolves `null` if nothing is pinned. Otherwise:
+```
+{ element, motion, note, tags, url, ts }
+```
+`url` is captured from `location.href` inside the overlay and **cannot be passed in or
+overridden**. Six months on, a decision whose source nobody can find is not a decision.
+
+**The two-document rule.** Favourites are **staging**, not the design language. Forty
+admired cards from forty sites, appended together, is a mood board with three radius scales
+and no ease — the opposite of a system. Favourites may contradict each other freely; they
+only become a design language by going through the promote step, one decision at a time.
+**Never write a favourite into Matt's design document directly.**
+
+### The file on disk
+
+One markdown file per study, screenshot beside it, in `design-studies/`:
+
+```markdown
+# Pricing card — layered shadow
+
+**From:** https://example.com/pricing
+**Saved:** 2026-08-07
+**Tags:** card, elevated, dark
+
+![](./pricing-card-layered-shadow.png)
+
+## Element
+| property | value |
+|---|---|
+| radius | 20px |
+| shadow | 0 8px 30px rgb(0 0 0 / .12) |
+| padding | 24px 28px |
+
+## Tailwind
+`rounded-2xl border border-white/10 px-7 py-6 ...`
+
+## Motion
+**tier 1** — transition: transform 180ms cubic-bezier(.2,.8,.2,1)
+**tier 2** — gsap: y 60→0, opacity 0→1, 0.8s power3.out
+
+## Notes
+<Matt's note, verbatim>
+```
+
+- **Title** is the short name Matt gave it; if he gave none, generate one from the tag and
+  the element (`Pricing card — layered shadow`). The filename is that title slugified, and
+  the screenshot uses the **same slug** so the pair stays obvious in a directory listing.
+- **`From:` and `Saved:` are mandatory.** Never write a favourite file without both.
+- **Only include the tiers that actually fired**, worded as the Study section requires — a
+  tier-3 inference written as a tier-1 fact is a lie that survives in a file.
+- Omit a section entirely rather than writing an empty one.
+
+**Markdown, not JSON, and this is deliberate:** Matt can read it, correct it by hand, and
+diff it in git; it survives this tool being uninstalled; and no index only the tool can read
+holds his decisions hostage. The cost is that nothing machine-queries it — pay it.
+
+### Seeding a design language
+
+If his project has no design document, `templates/design-language.md` next to this file is a
+neutral seed — sections and prompts only, every one marked **Not yet decided**, with no
+framework, stack or colour values assumed. Copy it in. **Tell him you created it** — do not
+silently add a file to his repo. `overlay.test.cjs` asserts the template stays stack-neutral;
+portability is a product constraint, not a style preference.
+
+## Promote — a favourite becomes a decision
+
+This is the step that makes a design language instead of a scrapbook, and it is the one part
+of this tool where **you must not decide anything.** You lay out the collision and the
+numbers; Matt picks. Work through one favourite at a time.
+
+**1. Find the target document.** Look for his project's existing design doc — a
+`DESIGN-LANGUAGE.md`, `design-system.md`, `STYLE.md`, a design section in the README,
+whatever it's actually called. **That file is the target**, however it's laid out.
+If there genuinely isn't one, copy `templates/design-language.md` in and **tell him you
+created it, and where.** Never add a file to his repo silently.
+
+**2. Get both sides into the same shape.** The classifier compares
+`{ category: [values] }` against `{ category: [values] }` — same keys on both sides. Build
+the study side from the favourite's `element.nonDefault` (`borderRadius` → `radii`, `padding`
+and `gap` → `spacing`, `boxShadow` → `shadows`, `fontSize` → `typeScale`), and the language
+side by reading his document's tables. A category his document has no section for is just an
+empty array — the classifier resolves that to "new" on its own.
+
+**Drop the absent values first** — `core.isAbsentValue(v)` is there for it. The style read
+answers every property whether the site's author set one or not, so a plain card hands back
+`boxShadow: "none"` and `paddingTop: "0px"`. Fed straight in, those come back as tokens to
+adopt, and you end up asking Matt to add "no shadow" to his design language. Filter, then
+reconcile. (It's a caller-side filter on purpose: "no shadow, deliberately" is occasionally a
+real decision, and only he can say which one this is.)
+
+**Units are handled, mismatched units are not.** `"20px"` and `20` compare the same; a
+multi-part value like `"0 8px 30px rgba(0,0,0,.12)"` stays one opaque token and can only
+match exactly. But `"20rem"` against a px scale is reported **new**, not conflict — there is
+no root font size to convert with, so a real collision between `20rem` and `320px` will be
+missed. **Convert to one unit before comparing** if his document and the studied site
+disagree.
+
+**3. Run the classifier.** `core.js` is DOM-free, so run it in plain Node — no browser needed:
+```bash
+node -e '
+  const core = require("<this skill dir>/overlay/core.js");
+  const study = { radii: [20], spacing: [16, 24] };            // from the favourite
+  const lang  = { radii: [6, 10, 16, 999], spacing: [4, 8, 16, 24, 32] };  // from his doc
+  console.log(JSON.stringify(core.reconcile(study, lang), null, 2));
+'
+```
+It returns `{ fits, adopt, conflicts }`; every studied value lands in **exactly one** bucket.
+
+**4. `fits` — say nothing.** The value is already in his scale. There is no decision here, and
+narrating it buries the two buckets that do need him.
+
+**5. `adopt` — propose it, and name the section it lands in.** "This card's shadow is
+`0 8px 30px rgb(0 0 0 / .12)`; your Shadows section is empty — add it as the first
+elevation level?" One line, one question.
+
+**6. `conflict` — lay out all three options with the real numbers, and stop.** A conflict is
+a value *close to but not* one he already has, which is the situation where quietly adopting
+it leaves two tokens doing one job. Say it in plain English:
+
+> This card's radius is **20px**. You already have **16px**. Four pixels apart, so you'd end
+> up with two "large corner" radii and no rule for which to use. Three ways to go:
+> - **Adapt** — use your existing 16px and lose the 4px difference. Nothing changes in your system.
+> - **Adopt** — add 20px and retire 16px, updating everywhere 16px is used today.
+> - **Exception** — keep 16px as the rule and record this one as a deliberate exception, with the reason.
+
+**Do not recommend one, do not pick the "obvious" one, do not act on silence.** The
+`suggestion` string in each conflict entry is phrased as a question on purpose. If he doesn't
+answer, the favourite stays a favourite — that is a fine outcome.
+
+**7. Write it into the right section.** Into Radii, under Radii. **Never append to the bottom
+of his document** — a design doc that grows by accretion stops being read, which defeats the
+whole point. Carry two things with every entry: **why** it was chosen and the **source URL**
+from the favourite. A value with no reason is indistinguishable next year from one someone
+typed by accident.
+
+**8. If his document's tokens are asserted by tests** (`tests/design/`, a token snapshot, a
+Tailwind config that mirrors the doc), **say so before you write**, and change them in the
+same commit. Promoting a token and leaving its test red hands him a broken suite for a
+change he approved.
 
 ## Watch loop
 

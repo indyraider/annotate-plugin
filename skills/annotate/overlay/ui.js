@@ -112,6 +112,30 @@
       pill.style.color = color;
     }
 
+    // ---- favourite panel: note + tags input, for Study mode's favourite
+    // action. Created generically, same as everything else in this file — no
+    // mode check lives here (see the guard test below); index.js decides when
+    // it's shown via setFavouriteVisible(), exactly as it already decides
+    // setClickHint()'s text.
+    var favPanel = document.createElement("div"); favPanel.className = "__ann-ui";
+    Object.assign(favPanel.style, { display: "none", flexDirection: "column", gap: "6px", width: "244px", background: pal.elevated, border: "1px solid " + pal.border, borderRadius: "12px", boxShadow: "0 10px 34px rgba(0,0,0,.42)", padding: "10px 12px", font: "12px " + SANS });
+    var favNote = document.createElement("input"); favNote.type = "text"; favNote.placeholder = "Note";
+    var favTags = document.createElement("input"); favTags.type = "text"; favTags.placeholder = "Tags, comma separated";
+    [favNote, favTags].forEach(function (inp) {
+      Object.assign(inp.style, { font: "12px " + SANS, padding: "6px 8px", borderRadius: "6px", border: "1px solid " + pal.border, background: pal.surface2, color: pal.text });
+    });
+    var favBtn = document.createElement("button"); favBtn.textContent = "★ Save favourite";
+    Object.assign(favBtn.style, { padding: "6px 10px", borderRadius: "6px", border: "1px solid " + pal.border, background: pal.accent, color: pal.accentFg, font: "600 12px " + SANS, cursor: "pointer" });
+    favPanel.append(favNote, favTags, favBtn);
+    bar.appendChild(favPanel);
+
+    var favouriteHandler = null;
+    function onFavouriteSave(fn) { favouriteHandler = fn; }
+    favBtn.addEventListener("click", function () {
+      if (favouriteHandler) favouriteHandler(favNote.value, favTags.value);
+    });
+    function setFavouriteVisible(v) { favPanel.style.display = v ? "flex" : "none"; }
+
     return {
       showHighlight: showHighlight,
       hideHighlight: hideHighlight,
@@ -123,6 +147,8 @@
       help: help,
       setPillLabel: setPillLabel,
       setClickHint: setClickHint,
+      setFavouriteVisible: setFavouriteVisible,
+      onFavouriteSave: onFavouriteSave,
       isOurs: isOurs
     };
   }

@@ -249,11 +249,169 @@
     return MOTION_FINGERPRINT_RE.test(basename);
   }
 
+  // Pure: distance between a studied value and one scale token. Numeric on both
+  // sides (the normal px/scale case) -> plain difference. Otherwise (a shadow
+  // string, say) there is no meaningful "close" — two different shadow strings
+  // don't have a distance, they either match or they don't — so it's 0 on exact
+  // equality and Infinity otherwise. Infinity is what keeps a non-numeric
+  // mismatch from ever being misread as a near-miss conflict below.
+  //
+  // A studied value arrives as the CSS literal the readout produced — "20px",
+  // not 20 — and Number("20px") is NaN, so a unit-bearing value used to fall
+  // straight to the string branch, miss every numeric token in the scale and
+  // come back "new". That is the UNSAFE direction this whole classifier exists
+  // to lean away from: "new" silently adds a second token doing the job of one
+  // the user already has. Only a PURE dimension is unwrapped — "0 8px 30px
+  // rgba(0,0,0,.12)" must stay one opaque string, or a shadow would parse to
+  // the number 0 and start reporting numeric distances to other shadows.
+  var DIMENSION = /^\s*(-?\d*\.?\d+)\s*(px|rem|em|%|ms|s|vh|vw)?\s*$/;
+  function parseDimension(v) {
+    if (typeof v === "number") return isNaN(v) ? null : { n: v, unit: "" };
+    var m = DIMENSION.exec(String(v));
+    return m ? { n: Number(m[1]), unit: m[2] || "" } : null;
+  }
+  // Pure: is this computed value the ABSENCE of a decision rather than one?
+  // The computed-style read answers every property whether or not the author
+  // set it, so a studied element hands back `boxShadow: "none"`, `paddingTop: "0px"`
+  // for the overwhelmingly common case of "there isn't one". Fed to reconcile
+  // those arrive as adoptable tokens, and the promote step asks the user to
+  // adopt `shadow: none` into their design language — noise that buries the two
+  // or three values that are real decisions. Callers filter with this; it is
+  // deliberately NOT applied inside reconcile, because "no shadow, on purpose"
+  // is occasionally a real decision and only the user can say which it is.
+  function isAbsentValue(v) {
+    if (v == null || v === "") return true;
+    var s = String(v).trim().toLowerCase();
+    return s === "none" || s === "normal" || s === "auto" || s === "0" || s === "0px" ||
+           s === "0%" || s === "0s" || s === "0ms" || s === "rgba(0, 0, 0, 0)" || s === "transparent";
+  }
+
+  // Every numeric read of a scale token goes through this, not bare Number().
+  // A scale is just as likely to be written ["6px","10px","16px"] as [6,10,16],
+  // and one bare Number() left behind is enough to turn the whole comparison
+  // to NaN and hand back the unsafe "new".
+  function toNumber(v) { var d = parseDimension(v); return d ? d.n : NaN; }
+  function tokenDistance(value, token) {
+    var a = parseDimension(value), b = parseDimension(token);
+    // Two explicit but DIFFERENT units aren't comparable without a root font
+    // size we don't have. Infinity says so honestly; treating 1.5rem as 18.5
+    // away from 20px would invent a conflict out of a unit mismatch.
+    if (a && b) return (a.unit && b.unit && a.unit !== b.unit) ? Infinity : Math.abs(a.n - b.n);
+    return value === token ? 0 : Infinity;
+  }
+
+  // Pure: the span of a numeric scale (max - min, ignoring any non-numeric
+  // tokens). Used below as the fallback denominator when the nearest token
+  // is 0 and dividing by the token itself would be meaningless.
+  function scaleRange(scale) {
+    var min = null, max = null;
+    for (var i = 0; i < scale.length; i++) {
+      var n = toNumber(scale[i]);
+      if (isNaN(n)) continue;
+      if (min === null || n < min) min = n;
+      if (max === null || n > max) max = n;
+    }
+    return min === null ? 0 : max - min;
+  }
+
+  // Pure: the scale token nearest a studied value, and how far away it is.
+  // Tie-break on equal distance is the smaller numeric token, not "whichever
+  // came first in the array" — array order is not part of a design language,
+  // so the same value against the same scale must classify the same way no
+  // matter how the caller happened to order it.
+  function nearestInScale(value, scale) {
+    if (!scale || !scale.length) return null;
+    var best = null;
+    for (var i = 0; i < scale.length; i++) {
+      var d = tokenDistance(value, scale[i]);
+      if (best === null || d < best.distance ||
+          (d === best.distance && toNumber(scale[i]) < toNumber(best.value))) {
+        best = { value: scale[i], distance: d };
+      }
+    }
+    return best;
+  }
+
+  // Pure: fits / new / conflict — the decision the whole reconcile feature
+  // rests on. The asymmetry is deliberate: wrong toward "conflict" costs the
+  // user one decision (adapt to the existing token, or keep both); wrong toward
+  // "new" silently adds a second token doing the same job as one that already
+  // exists, which is how a scale rots. So a borderline case must land on
+  // "conflict" — the new-token cutoff is "MORE THAN `threshold` away", not "at
+  // least `threshold` away".
+  // A scale with fewer than two entries isn't a scale yet — "close to it" isn't
+  // a meaningful claim, so it's forced to "new" rather than manufacturing a
+  // false conflict out of a single existing value.
+  function classifyValue(value, scale, opts) {
+    opts = opts || {};
+    var threshold = opts.threshold != null ? opts.threshold : 0.5;
+    var nearest = nearestInScale(value, scale);
+    if (nearest && nearest.distance === 0) return { verdict: "fits", nearest: nearest, suggestion: null };
+    if (!scale || scale.length < 2) return { verdict: "new", nearest: nearest, suggestion: null };
+    // Infinity means the two values don't even compare (non-numeric mismatch) —
+    // there is nothing to measure "close" against, so it can only be new.
+    if (!nearest || nearest.distance === Infinity) return { verdict: "new", nearest: nearest, suggestion: null };
+    var base = Math.abs(toNumber(nearest.value));
+    // A token of 0 breaks distance/base: ANY nonzero distance divided by 0 is
+    // Infinity, so a value sitting right next to a 0 token always read as
+    // "new" — the unsafe direction, since the whole point of this classifier
+    // is that borderline cases must lean "conflict". Fall back to the scale's
+    // own spread instead: the same 4px that's noise against a 0..999 range is
+    // a real jump against a 0..8 range.
+    var ratio = base > 0 ? nearest.distance / base
+      : (function () { var range = scaleRange(scale); return range > 0 ? nearest.distance / range : Infinity; })();
+    if (ratio > threshold) return { verdict: "new", nearest: nearest, suggestion: null };
+    return {
+      verdict: "conflict",
+      nearest: nearest,
+      suggestion: value + " is close to the existing " + nearest.value + " (off by " + nearest.distance +
+        ") — adapt to " + nearest.value + ", or keep both as distinct tokens?"
+    };
+  }
+
+  // Pure: a whole study's readout against the whole design language, bucketed.
+  // Every key the study carries (radii, spacing, shadows, ...) is looked up by
+  // the SAME key in the language; a key the language doesn't have yet is just
+  // an empty scale, which classifyValue already resolves to "new" via its
+  // <2-entries rule — no separate "unknown category" case needed. Every value
+  // must land in exactly one bucket: one that fell through all three would be a
+  // silently lost user decision.
+  function reconcile(study, language, opts) {
+    study = study || {};
+    language = language || {};
+    var out = { fits: [], adopt: [], conflicts: [] };
+    for (var key in study) {
+      if (!Object.prototype.hasOwnProperty.call(study, key)) continue;
+      var values = study[key];
+      // A scalar (a bare number, e.g. opacity: 0.5) has no .length, so the
+      // loop below would silently iterate zero times and the value would
+      // vanish with no error — exactly the "silently lost user decision" this
+      // function exists to prevent. Wrap it as one-element rather than drop
+      // it. A bare STRING also has .length, so without Array.isArray it would
+      // iterate character-by-character and shred "abc" into three fake tokens
+      // — Array.isArray is what keeps a string a single value.
+      if (values == null) continue;
+      if (!Array.isArray(values)) values = [values];
+      var scale = language[key] || [];
+      for (var i = 0; i < values.length; i++) {
+        var value = values[i];
+        var result = classifyValue(value, scale, opts);
+        var entry = { key: key, value: value, nearest: result.nearest, suggestion: result.suggestion };
+        if (result.verdict === "fits") out.fits.push(entry);
+        else if (result.verdict === "conflict") out.conflicts.push(entry);
+        else out.adopt.push(entry);
+      }
+    }
+    return out;
+  }
+
   return {
     buildSelector: buildSelector, fitDimensions: fitDimensions,
     classifyRequest: classifyRequest, createPerfBuffer: createPerfBuffer,
     findRscEntry: findRscEntry, tallyValues: tallyValues, detectScale: detectScale,
     defaultsFor: defaultsFor, toTailwind: toTailwind, isRootSelector: isRootSelector,
     isOwnModuleUrl: isOwnModuleUrl, isMotionFingerprintUrl: isMotionFingerprintUrl,
+    nearestInScale: nearestInScale, classifyValue: classifyValue, reconcile: reconcile,
+    isAbsentValue: isAbsentValue,
   };
 });
