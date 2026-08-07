@@ -305,4 +305,33 @@ assert.deepStrictEqual(
   "tallyValues breaks ties by first appearance (z, y, x)"
 );
 
+// ---- Task 2: study.js — the element readout ------------------------------
+
+const studySrc = fs.readFileSync(MOD("study.js"), "utf8");
+const study = require(MOD("study.js"));
+assert.strictEqual(typeof study.create, "function", "study exports create");
+
+// Study must be stack-agnostic — this is what separates it from measure.js and
+// makes it sellable. Any framework-specific string here is a product bug.
+assert.ok(!/_rsc=|Next-Action|__reactFiber|\/api\/attachments\/|supabase/i.test(studySrc),
+  "study.js makes no framework assumptions");
+
+// Read-only on the host page: Study must never mutate the site it inspects.
+// Overlay chrome is exempt (it is created, not injected into existing nodes).
+assert.ok(!/\.setAttribute\(|\.innerHTML\s*=|\.remove\(\)/.test(
+  studySrc.replace(/[\s\S]*?function createChrome[\s\S]*?\n  }/g, "")),
+  "study.js does not mutate the inspected page");
+
+// Cross-origin stylesheets throw on .cssRules — that is normal and must be
+// caught, or Study dies on most real sites at the first external font.
+assert.ok(/try\s*{[\s\S]{0,400}cssRules/.test(studySrc), "stylesheet walk is guarded");
+
+// Named dependency error, matching the pattern the other modules use.
+assert.ok(/throw new Error\("annotate: study\.js requires/.test(studySrc), "named dep error");
+
+for (const f of ["study.js"]) {
+  const src = fs.readFileSync(MOD(f), "utf8");
+  assert.ok(!/\.type\s*=\s*["']file["']/.test(src), "no file input in " + f);
+}
+
 console.log("overlay.test: ok");
