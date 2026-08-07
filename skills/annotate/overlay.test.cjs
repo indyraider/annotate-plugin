@@ -145,4 +145,27 @@ for (const f of ["core.js", "palette.js", "ui.js"]) {
   assert.ok(!/\.type\s*=\s*["']file["']/.test(src), "no file input in " + f + " (its chooser jams the agent)");
 }
 
+// Smoke-require both modules, mirroring the core.js check above. build() and create()
+// need a DOM and can't be called here, but requiring ui.js exercises its
+// require("./palette.js") path — a broken relative path or a missing export fails here,
+// not on first injection into a live page.
+const palette = require(MOD("palette.js"));
+assert.strictEqual(typeof palette.build, "function", "palette exports build");
+assert.strictEqual(typeof palette.SANS, "string", "palette exports SANS");
+assert.strictEqual(typeof palette.MONO, "string", "palette exports MONO");
+
+const ui = require(MOD("ui.js"));
+assert.strictEqual(typeof ui.create, "function", "ui exports create");
+
+// Task 5 consumes these key names literally; a silent rename here would break it with
+// no test failing. Guard on the source text of each module's returned object.
+const paletteKeys = ["elevated", "surface", "surface2", "hover", "border", "hairline", "text", "text2", "text3", "accent", "accentFg", "accentSoft"];
+for (const k of paletteKeys) {
+  assert.ok(new RegExp(k + "\\s*:").test(paletteSrc), "palette.build() return must include key " + k);
+}
+const uiKeys = ["showHighlight", "hideHighlight", "showInspector", "hideInspector", "bar", "pill", "guide", "help", "setPillLabel", "isOurs"];
+for (const k of uiKeys) {
+  assert.ok(new RegExp(k + "\\s*:").test(uiSrc), "ui.create() handles must include key " + k);
+}
+
 console.log("overlay.test: ok");

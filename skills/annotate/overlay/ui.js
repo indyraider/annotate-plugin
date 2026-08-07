@@ -7,6 +7,7 @@
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else { root.__annotatorMods = root.__annotatorMods || {}; root.__annotatorMods.ui = api; }
 })(typeof self !== "undefined" ? self : this, function (palette) {
+  if (!palette) throw new Error("annotate: ui.js requires palette.js to load first");
   var SANS = palette.SANS;
   var MONO = palette.MONO;
 
