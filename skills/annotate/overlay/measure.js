@@ -19,6 +19,12 @@
   function create(ctx) {
     var notify = ctx.notify;
     var perfBuf = null, perfStop = null;
+    // Compare's copy of the run. take() DRAINS perfBuf, and the watch loop calls
+    // it every ~25s — so by the time anyone presses "save baseline" the buffer
+    // has usually been emptied several times over and a comparison would be run
+    // against whatever happened in the last few seconds. This one only resets
+    // when recording restarts.
+    var session = [], sessionDropped = 0;
 
     // Next starts the `?_rsc=` navigation request BEFORE it pushes the new URL, so detection
     // looks BACKWARD from the URL change by this much. (Measured live: the request began 45ms
@@ -30,7 +36,17 @@
     function start() {
       if (perfStop) return;                                   // idempotent re-entry
       perfBuf = perfBuf || createPerfBuffer(500);
-      var buf = perfBuf, obs = [], pendingNav = null, navTimer = null;
+      // Every entry is recorded twice: into the draining buffer the agent reads,
+      // and into the session log Compare reads. Wrapping push HERE rather than at
+      // the six call sites below means a future entry kind cannot forget to join
+      // in. Same 500 cap, and it counts its own drops for the same reason.
+      session = []; sessionDropped = 0;
+      var buf = { push: function (e) {
+        session.push(e);
+        if (session.length > 500) { session.shift(); sessionDropped++; }
+        perfBuf.push(e);
+      } };
+      var obs = [], pendingNav = null, navTimer = null;
       var stamp = function () { return Math.round(performance.now()); };
 
       // --- client-side navigation (channel switching) ---
@@ -164,7 +180,18 @@
     // Lets index.js render the pill's "· N" count without reaching into our buffer.
     function size() { return perfBuf ? perfBuf.size() : 0; }
 
-    return { start: start, stop: stop, take: take, size: size };
+    // The whole recording session, non-draining, for Compare. Returns a COPY —
+    // handing out the live array would let a caller mutate the run underneath us,
+    // and a saved baseline that changes afterwards is worse than no baseline.
+    // The `dropped` marker is prepended in the same shape take() uses, so
+    // core.summariseRun sees truncation the one way it knows how to see it.
+    function sessionTake() {
+      var out = session.slice();
+      if (sessionDropped) out = [{ t: Math.round(performance.now()), kind: "dropped", n: sessionDropped }].concat(out);
+      return out;
+    }
+
+    return { start: start, stop: stop, take: take, size: size, sessionTake: sessionTake };
   }
 
   return { create: create };

@@ -897,6 +897,143 @@ assert.strictEqual(core.classifyValue("0 1px 2px black", ["0 1px 2px black", "0 
 assert.strictEqual(core.classifyValue("20rem", ["16px", "24px", "32px"]).verdict, "new",
   "rem against a px scale is not comparable — 'new', never a conflict fabricated out of a unit mismatch");
 
+// ---- Phase 3: Compare — baseline vs re-run --------------------------------
+
+// The spec names this the risky part of the phase ("Compare's delta maths"),
+// and it is pure, so it gets tested properly rather than grepped for.
+
+// Pairing across runs is the whole feature. Next appends ?_rsc=<hash> to its
+// navigation payloads and that hash differs every single time — leave it on and
+// NOTHING matches, so every row reads "added" and the diff quietly becomes a
+// list. That failure would look like a working feature.
+assert.strictEqual(core.normalisePath("https://app.test/chat?_rsc=abc123"), "/chat", "origin and query are stripped");
+assert.strictEqual(core.normalisePath("https://app.test/chat?_rsc=zzz999"), "/chat", "a different hash pairs with the same route");
+assert.strictEqual(core.normalisePath("/tasks#section"), "/tasks", "the hash fragment goes too");
+assert.strictEqual(core.normalisePath("https://app.test"), "/", "a bare origin is the root, never empty string");
+
+assert.strictEqual(core.entryKey({ kind: "nav", from: "/a?x=1", to: "/b?_rsc=q" }), "nav /a -> /b", "a nav is keyed on the route PAIR, not just the destination");
+assert.strictEqual(core.entryKey({ kind: "action", url: "https://app.test/chat?_rsc=1" }), "action /chat", "an action is keyed on its path");
+assert.strictEqual(core.entryKey({ kind: "longtask", ms: 90 }), "longtask", "a long task has no identity, so it aggregates by kind");
+assert.strictEqual(core.entryKey({ kind: "dropped", n: 12 }), null, "a dropped marker is bookkeeping, never a measurement");
+
+// A cache-served nav has no rscMs at all. Reading only rscMs would drop every
+// cache hit out of the comparison — the fast ones, silently.
+assert.strictEqual(core.entryMetric({ kind: "nav", rscMs: 120, toPaintMs: 300 }), 120, "nav prefers the server's own time");
+assert.strictEqual(core.entryMetric({ kind: "nav", rscMs: null, toPaintMs: 40 }), 40, "a cache-served nav still contributes its paint time");
+assert.strictEqual(core.entryMetric({ kind: "shift", value: 0.12 }), 0.12, "a layout shift is scored on its value");
+assert.strictEqual(core.entryMetric({ kind: "action", ms: 0 }), 0, "a genuine zero is a measurement, not a missing one");
+
+// Summarising.
+var runA = [
+  { kind: "action", url: "/chat", ms: 100 },
+  { kind: "action", url: "/chat", ms: 200 },
+  { kind: "nav", from: "/", to: "/tasks", rscMs: 50 }
+];
+var sumA = core.summariseRun(runA);
+assert.strictEqual(sumA.byKey["action /chat"].n, 2, "two samples collapse into one key");
+assert.strictEqual(sumA.byKey["action /chat"].mean, 150, "mean of 100 and 200");
+assert.strictEqual(sumA.byKey["action /chat"].min, 100, "min tracked");
+assert.strictEqual(sumA.byKey["action /chat"].max, 200, "max tracked");
+assert.strictEqual(sumA.truncated, false, "a complete run is not truncated");
+
+// The comparison itself.
+var base = [{ kind: "action", url: "/chat", ms: 400 }, { kind: "action", url: "/chat", ms: 400 },
+            { kind: "nav", from: "/", to: "/tasks", rscMs: 100 }, { kind: "nav", from: "/", to: "/tasks", rscMs: 100 }];
+var next = [{ kind: "action", url: "/chat", ms: 100 }, { kind: "action", url: "/chat", ms: 100 },
+            { kind: "nav", from: "/", to: "/tasks", rscMs: 300 }, { kind: "nav", from: "/", to: "/tasks", rscMs: 300 },
+            { kind: "img", url: "/img/a.png", ms: 80 }];
+var cmp = core.compareRuns(base, next);
+var cmpBy = {};
+cmp.rows.forEach(function (r) { cmpBy[r.key] = r; });
+assert.strictEqual(cmpBy["action /chat"].verdict, "faster", "400ms -> 100ms is faster");
+assert.strictEqual(cmpBy["action /chat"].deltaMs, -300, "the delta is signed against the baseline");
+assert.strictEqual(cmpBy["nav / -> /tasks"].verdict, "slower", "100ms -> 300ms is a regression");
+assert.strictEqual(cmpBy["img /img/a.png"].verdict, "added", "something only in the new run is 'added', never a 200% regression");
+assert.strictEqual(cmpBy["img /img/a.png"].deltaMs, null, "an added row has no delta to report");
+
+// Every key lands in exactly one row — a key falling through all the branches
+// would be a measurement silently dropped from the user's comparison.
+assert.strictEqual(cmp.rows.length, 3, "three distinct keys, three rows");
+assert.strictEqual(cmp.regressions.length, 1, "regressions-only filter isolates the nav");
+assert.strictEqual(cmp.regressions[0].key, "nav / -> /tasks", "and it is the right one");
+
+// A key present only in the baseline is "gone", not a 100% improvement.
+var goneCmp = core.compareRuns([{ kind: "action", url: "/old", ms: 500 }], []);
+assert.strictEqual(goneCmp.rows[0].verdict, "gone", "something that stopped happening is 'gone'");
+assert.strictEqual(goneCmp.regressions.length, 0, "and it is not counted as a regression");
+
+// BOTH noise floors must clear. This is what stops the tool reporting a win a
+// second run would not reproduce.
+var pctOnly = core.compareRuns([{ kind: "action", url: "/x", ms: 20 }], [{ kind: "action", url: "/x", ms: 16 }]);
+assert.strictEqual(pctOnly.rows[0].verdict, "same", "4ms off 20ms is 20% but only 4ms — noise, not a win");
+var absOnly = core.compareRuns([{ kind: "action", url: "/x", ms: 30000 }], [{ kind: "action", url: "/x", ms: 29600 }]);
+assert.strictEqual(absOnly.rows[0].verdict, "same", "400ms off 30s is a big number but 1.3% — noise, not a win");
+var real = core.compareRuns([{ kind: "action", url: "/x", ms: 400 }], [{ kind: "action", url: "/x", ms: 100 }]);
+assert.strictEqual(real.rows[0].verdict, "faster", "clearing both floors is a real result");
+
+// One observation each side is an anecdote, and the row has to say so — this is
+// the same mistake as the finding that evaporated on a prod build.
+assert.strictEqual(real.rows[0].thin, true, "one sample each side is flagged thin");
+assert.strictEqual(cmpBy["action /chat"].thin, false, "two samples each side is not");
+
+// Truncation must never read as a complete comparison.
+var trunc = core.compareRuns([{ kind: "dropped", n: 37 }, { kind: "action", url: "/x", ms: 10 }],
+                             [{ kind: "action", url: "/x", ms: 10 }]);
+assert.strictEqual(trunc.truncated, true, "a dropped marker on either side truncates the whole comparison");
+assert.strictEqual(trunc.dropped.before, 37, "and reports how many entries were lost");
+assert.strictEqual(trunc.rows.length, 1, "the dropped marker itself is not a row");
+
+// Worst regression first: it is the thing the run was done to find.
+assert.strictEqual(cmp.rows[0].verdict, "slower", "regressions sort to the top");
+
+// Two empty runs must not throw — the user WILL press this before recording.
+var empty = core.compareRuns([], []);
+assert.deepStrictEqual(empty.rows, [], "comparing nothing to nothing is an empty diff, not a crash");
+assert.strictEqual(empty.truncated, false, "and it is not truncated");
+
+// ---- Phase 3: Compare's wiring --------------------------------------------
+
+// take() DRAINS, and the watch loop calls it every ~25s — so a Compare built on
+// take() would silently compare "whatever happened in the last few seconds"
+// against the baseline. measure.js keeps a separate non-draining session log.
+assert.ok(/sessionTake\s*:\s*sessionTake/.test(measureSrc), "measure.js exposes sessionTake for Compare");
+assert.ok(/var out = session\.slice\(\)/.test(measureSrc), "sessionTake hands out a COPY — a baseline that mutates afterwards is worse than none");
+assert.ok(/session = \[\]; sessionDropped = 0;/.test(measureSrc), "a new recording session resets the log");
+
+// The session log is fed by wrapping buf.push ONCE, not by editing the six
+// call sites — so a future entry kind cannot forget to join in.
+assert.ok(/var buf = \{ push: function \(e\) \{/.test(measureSrc), "measure.js wraps push in one place rather than at every call site");
+assert.strictEqual((measureSrc.match(/session\.push\(/g) || []).length, 1, "exactly one place appends to the session log");
+
+// Its cap and its drop counter mirror the perf buffer's, because a truncated
+// session compared against a complete baseline is comparing different things.
+assert.ok(/if \(session\.length > 500\) \{ session\.shift\(\); sessionDropped\+\+; \}/.test(measureSrc), "the session log caps and counts its own drops");
+assert.ok(/kind: "dropped", n: sessionDropped/.test(measureSrc), "and reports them in the shape summariseRun understands");
+
+// index.js's entry points.
+assert.ok(/window\.__annotatorCompareTake = function/.test(indexSrc), "index.js exposes __annotatorCompareTake");
+assert.ok(/window\.__annotatorCompareSaveBaseline = function/.test(indexSrc), "index.js exposes __annotatorCompareSaveBaseline");
+assert.ok(/window\.__annotatorCompareClearBaseline = function/.test(indexSrc), "index.js exposes __annotatorCompareClearBaseline");
+
+// A caller that only ever sees regressions cannot tell "nothing got worse" from
+// "nothing was measured in both runs", and those need different answers.
+// Anchored on the semicolon: without it the pattern is a SUBSTRING match and
+// stays green against `...sessionTake()).regressions;` — the exact narrowing
+// it is meant to catch. Caught by sabotage, not by reading.
+assert.ok(/return core\.compareRuns\(b\.entries, measureMode\.sessionTake\(\)\);/.test(indexSrc), "compareTake returns the full result, not a pre-filtered list");
+assert.ok(/error: "no-baseline"/.test(indexSrc), "and says so explicitly when there is no baseline, rather than returning an empty diff");
+
+// The baseline goes to localStorage, not memory: the entire point is that the
+// agent works in between, and editing a component the page uses triggers an HMR
+// reload that would take an in-memory baseline with it.
+assert.ok(/localStorage\.setItem\(BASELINE_KEY/.test(indexSrc), "the baseline is persisted, not held in memory");
+assert.ok(/catch \(e\) \{[\s\S]{0,160}?Could not save the baseline/.test(indexSrc), "a refused write is reported, never swallowed into a silent no-op");
+
+// Compare must be a live tab now, and must not have quietly become a dead stop
+// in the Alt+A rotation.
+assert.ok(!/key: "compare"[^}]*disabled/.test(indexSrc), "Compare is no longer disabled");
+assert.ok(/key: "compare"[^}]*Baseline vs re-run/.test(indexSrc), "and its tooltip says what it does");
+
 // ---- Alt+click: the only place Study may stop an event ---------------------
 
 // Verified live 2026-08-07: clicking a CTA in Study mode pinned it AND followed

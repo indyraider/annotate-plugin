@@ -89,6 +89,114 @@
     };
   }
 
+  // ---- Compare: baseline vs re-run --------------------------------------
+  //
+  // Justified by two recorded incidents in this project. Measure mode's first
+  // version reported `servedFromCache: true` for every navigation — the exact
+  // opposite of the truth — with all sixteen of its unit tests passing. And a
+  // headline performance finding once evaporated because it had been measured
+  // on the dev server. Before-and-after numbers are how that stops happening,
+  // which means these numbers have to be honest about their own weakness.
+
+  // Pure: strip origin, query and hash so the same route pairs across two runs.
+  // Next appends `?_rsc=<hash>` to navigation payloads and it differs every
+  // time — leave it on and NOTHING ever matches, so every row reads "added" and
+  // the comparison silently becomes a list instead of a diff.
+  function normalisePath(url) {
+    if (url == null) return "";
+    return String(url).replace(/^https?:\/\/[^/]+/, "").split("?")[0].split("#")[0] || "/";
+  }
+
+  // Pure: the identity a perf entry is paired on across runs. nav/action/img
+  // carry a URL worth keeping; shift and longtask have no natural identity, so
+  // they aggregate by kind — "the page shifted less than it used to" is the
+  // only honest claim available for those.
+  function entryKey(e) {
+    if (!e || !e.kind) return null;
+    if (e.kind === "nav") return "nav " + normalisePath(e.from) + " -> " + normalisePath(e.to);
+    if (e.kind === "action") return "action " + normalisePath(e.url);
+    if (e.kind === "img") return "img " + normalisePath(e.url);
+    if (e.kind === "dropped") return null;              // bookkeeping, not a measurement
+    return e.kind;
+  }
+
+  // Pure: the one number that means "how bad was it" for each kind. nav prefers
+  // the server's own time and falls back to time-to-paint; a cache-served nav
+  // has no rscMs at all and toPaintMs is the only thing that happened.
+  function entryMetric(e) {
+    if (!e) return null;
+    if (e.kind === "nav") return e.rscMs != null ? e.rscMs : (e.toPaintMs != null ? e.toPaintMs : null);
+    if (e.kind === "shift") return e.value != null ? e.value : null;
+    return e.ms != null ? e.ms : null;
+  }
+
+  // Pure: entries -> { key: {kind, n, total, mean, min, max} }, plus whether the
+  // run was truncated. A `dropped` marker means the 500-entry buffer overflowed,
+  // and comparing two runs where one lost entries is comparing different things
+  // — silent truncation cost this project 7920 automation runs once.
+  function summariseRun(entries) {
+    var byKey = Object.create(null), truncated = false, dropped = 0;
+    (entries || []).forEach(function (e) {
+      if (e && e.kind === "dropped") { truncated = true; dropped += (e.n || 0); return; }
+      var key = entryKey(e), m = entryMetric(e);
+      if (key === null || m === null || isNaN(m)) return;
+      var s = byKey[key] || (byKey[key] = { key: key, kind: e.kind, n: 0, total: 0, min: m, max: m, mean: 0 });
+      s.n++; s.total += m;
+      if (m < s.min) s.min = m;
+      if (m > s.max) s.max = m;
+      s.mean = s.total / s.n;
+    });
+    return { byKey: byKey, truncated: truncated, dropped: dropped };
+  }
+
+  // Pure: baseline vs current. Every key in either run lands in exactly one row.
+  //
+  // Two noise floors, and BOTH must be cleared before anything is called faster
+  // or slower. 4ms off a 20ms action is 20% and still noise; 400ms off a 30s
+  // upload is a big number and still noise. Requiring both is what stops this
+  // reporting a win that a second run would not reproduce.
+  function compareRuns(baselineEntries, currentEntries, opts) {
+    opts = opts || {};
+    var minMs = opts.minMs != null ? opts.minMs : 5;
+    var minPct = opts.minPct != null ? opts.minPct : 0.1;
+    var before = summariseRun(baselineEntries), after = summariseRun(currentEntries);
+    var keys = [], seen = Object.create(null);
+    [before.byKey, after.byKey].forEach(function (m) {
+      for (var k in m) if (!seen[k]) { seen[k] = 1; keys.push(k); }
+    });
+    var rows = keys.map(function (k) {
+      var b = before.byKey[k] || null, a = after.byKey[k] || null;
+      var row = { key: k, kind: (b || a).kind, before: b, after: a, deltaMs: null, deltaPct: null, verdict: "", thin: false };
+      if (!b) { row.verdict = "added"; return row; }
+      if (!a) { row.verdict = "gone"; return row; }
+      row.deltaMs = a.mean - b.mean;
+      row.deltaPct = b.mean === 0 ? null : row.deltaMs / b.mean;
+      // A single observation on either side is an anecdote. Say so on the row
+      // rather than letting a reader treat "38% faster" from one sample each as
+      // a measurement — this is the same mistake as the dev-server finding.
+      row.thin = b.n < 2 || a.n < 2;
+      var clearsAbs = Math.abs(row.deltaMs) >= minMs;
+      var clearsPct = row.deltaPct === null ? true : Math.abs(row.deltaPct) >= minPct;
+      if (!clearsAbs || !clearsPct) row.verdict = "same";
+      else row.verdict = row.deltaMs > 0 ? "slower" : "faster";
+      return row;
+    });
+    // Worst regression first: that is the thing the run was done to find.
+    rows.sort(function (x, y) {
+      var rank = { slower: 0, added: 1, faster: 2, same: 3, gone: 4 };
+      if (rank[x.verdict] !== rank[y.verdict]) return rank[x.verdict] - rank[y.verdict];
+      return (y.deltaMs || 0) - (x.deltaMs || 0);
+    });
+    return {
+      rows: rows,
+      regressions: rows.filter(function (r) { return r.verdict === "slower"; }),
+      // Never let a truncated run read as a complete one.
+      truncated: before.truncated || after.truncated,
+      dropped: { before: before.dropped, after: after.dropped },
+      thresholds: { minMs: minMs, minPct: minPct }
+    };
+  }
+
   // Pure: frequency-rank a list of values. A page's real palette is the handful
   // of colours used hundreds of times; everything else is noise from one banner.
   function tallyValues(values) {
@@ -432,5 +540,7 @@
     isOwnModuleUrl: isOwnModuleUrl, isMotionFingerprintUrl: isMotionFingerprintUrl,
     nearestInScale: nearestInScale, classifyValue: classifyValue, reconcile: reconcile,
     isAbsentValue: isAbsentValue, nextMode: nextMode,
+    normalisePath: normalisePath, entryKey: entryKey, entryMetric: entryMetric,
+    summariseRun: summariseRun, compareRuns: compareRuns,
   };
 });
