@@ -849,10 +849,10 @@ assert.strictEqual(core.classifyValue("16px", [6, 10, 16]).verdict, "fits",
   "'16px' matches the token 16 exactly");
 // The unit may be on the SCALE side instead. This scale is deliberately narrow
 // (16/18): a bare Number() on the nearest token yields NaN, which falls through
-// to the scale-RANGE fallback, and a range of 2 makes 25 look far away — "new".
-// A wider scale would be classified correctly by the fallback anyway and so
-// would prove nothing about the line under test.
-assert.strictEqual(core.classifyValue(25, ["16px", "18px"]).verdict, "conflict",
+// to the scale-RANGE fallback, and a range of 2 makes even 19 look far away —
+// "new". A wider scale would be classified correctly by the fallback anyway and
+// so would prove nothing about the line under test.
+assert.strictEqual(core.classifyValue(19, ["16px", "18px"]).verdict, "conflict",
   "a px-suffixed SCALE is read numerically — not left as NaN for the range fallback to paper over");
 assert.strictEqual(core.classifyValue("1.5rem", ["1rem", "1.25rem", "2rem"]).verdict, "conflict",
   "rem scales compare on their own terms, no px assumption");
@@ -880,6 +880,22 @@ assert.strictEqual(core.classifyValue("0 1px 2px black", ["0 1px 2px black", "0 
 // with or without the guard and would prove nothing.
 assert.strictEqual(core.classifyValue("20rem", ["16px", "24px", "32px"]).verdict, "new",
   "rem against a px scale is not comparable — 'new', never a conflict fabricated out of a unit mismatch");
+
+// ---- The relaxed default, and why it is a product decision ----------------
+
+// Matt's ruling 2026-08-07: the tool is for INSPIRATION, not transcription.
+// Under that use a value landing near an existing token is the normal case and
+// mostly wants adapting, not a decision — so the default band was relaxed from
+// 0.5 to 0.25. A warning that fires on every near-miss gets clicked past.
+assert.strictEqual(core.classifyValue(20, [6, 10, 16, 999]).verdict, "conflict",
+  "20 against 16 (4px apart) still collides — this is the case the feature exists for");
+assert.strictEqual(core.classifyValue(24, [6, 10, 16, 999]).verdict, "new",
+  "24 against 16 (8px apart) is now a separate size, not a collision — the relaxation, asserted");
+
+// The threshold stays overridable, because the right band is a matter of taste
+// and this is the knob that gets tuned once there is a real design doc behind it.
+assert.strictEqual(core.classifyValue(24, [6, 10, 16, 999], { threshold: 0.5 }).verdict, "conflict",
+  "the old band is still reachable by passing threshold explicitly");
 
 // ---- Phase 2: the chrome must be readable on a page with no background -----
 

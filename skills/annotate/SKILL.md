@@ -379,19 +379,31 @@ narrating it buries the two buckets that do need him.
 `0 8px 30px rgb(0 0 0 / .12)`; your Shadows section is empty — add it as the first
 elevation level?" One line, one question.
 
-**6. `conflict` — lay out all three options with the real numbers, and stop.** A conflict is
-a value *close to but not* one he already has, which is the situation where quietly adopting
-it leaves two tokens doing one job. Say it in plain English:
+**6. `conflict` — lead with adapting, and say so in one line rather than asking three.**
 
-> This card's radius is **20px**. You already have **16px**. Four pixels apart, so you'd end
-> up with two "large corner" radii and no rule for which to use. Three ways to go:
-> - **Adapt** — use your existing 16px and lose the 4px difference. Nothing changes in your system.
-> - **Adopt** — add 20px and retire 16px, updating everywhere 16px is used today.
-> - **Exception** — keep 16px as the rule and record this one as a deliberate exception, with the reason.
+**This is inspiration, not transcription** (Matt's ruling, 2026-08-07). He is saying "I like
+that card's corners, use it as a starting point" — not "reproduce this site". So when a
+studied value lands near something he already has, **the expected outcome is that it snaps to
+his value**, and treating that as a decision to be adjudicated is what turns a useful tool
+into a nagging one. Report it, don't interrogate him:
 
-**Do not recommend one, do not pick the "obvious" one, do not act on silence.** The
-`suggestion` string in each conflict entry is phrased as a question on purpose. If he doesn't
-answer, the favourite stays a favourite — that is a fine outcome.
+> Its radius is **20px**; snapped to your existing **16px** (4px apart).
+
+That is a statement he can override, not a question blocking the work. **Only stop and lay
+out the choice when the difference looks deliberate** — a value that is close but where the
+*source* clearly treats it as a distinct size (it appears repeatedly across the studied page,
+or its own sweep shows both values in one scale). Then, and only then:
+
+> - **Adapt** — use your existing 16px. The 4px goes.
+> - **Adopt** — add 20px and retire 16px everywhere it is used today.
+> - **Exception** — keep 16px as the rule, record this one as deliberate, with the reason.
+
+**Still never choose the adopt-or-exception branch for him.** Snapping is the safe default
+because it is reversible and leaves his system unchanged; changing or forking his scale is
+neither, and stays his call.
+
+The band was relaxed to 0.25 for exactly this reason — see `classifyValue`. A value 8px from
+his nearest token is now simply a different size, not a collision.
 
 **7. Write it into the right section.** Into Radii, under Radii. **Never append to the bottom
 of his document** — a design doc that grows by accretion stops being read, which defeats the

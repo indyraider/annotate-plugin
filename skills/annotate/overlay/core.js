@@ -356,7 +356,14 @@
   // false conflict out of a single existing value.
   function classifyValue(value, scale, opts) {
     opts = opts || {};
-    var threshold = opts.threshold != null ? opts.threshold : 0.5;
+    // 0.25, relaxed from 0.5 on Matt's ruling 2026-08-07. The reason matters
+    // more than the number: this tool is for INSPIRATION, not transcription —
+    // "I like that card's corners, use it as a starting point". Under that use,
+    // a value landing near an existing token is the NORMAL case and mostly wants
+    // adapting to what he already has, not a decision. A warning that fires on
+    // every near-miss is a warning he learns to click past, which is worse than
+    // one that fires less often and means something.
+    var threshold = opts.threshold != null ? opts.threshold : 0.25;
     var nearest = nearestInScale(value, scale);
     if (nearest && nearest.distance === 0) return { verdict: "fits", nearest: nearest, suggestion: null };
     if (!scale || scale.length < 2) return { verdict: "new", nearest: nearest, suggestion: null };
