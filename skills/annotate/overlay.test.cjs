@@ -281,4 +281,28 @@ assert.deepStrictEqual(core.toTailwind({ display: "block", position: "static" })
 assert.strictEqual(typeof core.defaultsFor("div"), "object", "defaultsFor returns a table");
 assert.strictEqual(core.defaultsFor("div").display, "block", "div defaults to display:block");
 
+// ---- Fixes to Phase 1a functions -----------------------------------------------
+
+// Fix 1: toTailwind must emit position when non-default (e.g. sticky).
+// Previously: position was in BLOCK_DEFAULTS but never read from the style input.
+assert.ok(core.toTailwind({ position: "sticky" }).indexOf("sticky") !== -1, "position:sticky -> sticky, got " + core.toTailwind({ position: "sticky" }).join(" "));
+assert.deepStrictEqual(core.toTailwind({ position: "static" }), [], "position:static is a default and emits nothing");
+
+// Fix 2: tallyValues must handle values that look like Object.prototype members.
+// Previously: "toString", "constructor", etc. were silently dropped because
+// counts was a bare {} inheriting from Object.prototype.
+assert.deepStrictEqual(
+  core.tallyValues(["toString", "toString", "a"]),
+  [{ value: "toString", count: 2 }, { value: "a", count: 1 }],
+  "tallyValues counts values shaped like Object.prototype members (toString)"
+);
+
+// Fix 3: tie-breaking must be tested with actual ties in frequency.
+// Previously: the only test had counts 3/2/1 with no ties, so a sort bug would pass.
+assert.deepStrictEqual(
+  core.tallyValues(["z", "y", "x", "z", "y", "x"]),
+  [{ value: "z", count: 2 }, { value: "y", count: 2 }, { value: "x", count: 2 }],
+  "tallyValues breaks ties by first appearance (z, y, x)"
+);
+
 console.log("overlay.test: ok");

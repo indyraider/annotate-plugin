@@ -93,7 +93,7 @@
   // of colours used hundreds of times; everything else is noise from one banner.
   function tallyValues(values) {
     if (!values || !values.length) return [];
-    var counts = {}, order = [];
+    var counts = Object.create(null), order = [];
     for (var i = 0; i < values.length; i++) {
       var v = values[i];
       if (counts[v] === undefined) { counts[v] = 0; order.push(v); }
@@ -104,7 +104,9 @@
   }
 
   // Pure: is this set of numbers built on a grid, and what is its unit?
-  // `base >= 2` because a GCD of 1 means "these are just numbers", not a system.
+  // The `base >= 2` guard ensures we don't claim a grid when the GCD is 1 —
+  // mathematically, 1 divides all numbers, but "these are just numbers" is the
+  // honest answer, not a 1px grid. base >= 2 ensures a real spacing system.
   function detectScale(numbers) {
     if (!numbers || !numbers.length) return { base: 0, values: [], onGrid: false };
     var vals = [], seen = {};
@@ -118,9 +120,6 @@
     var base = vals[0];
     for (var j = 1; j < vals.length; j++) base = gcd(base, vals[j]);
     var onGrid = base >= 2;
-    if (onGrid) {
-      for (var k = 0; k < vals.length; k++) { if (vals[k] % base !== 0) { onGrid = false; break; } }
-    }
     return { base: base, values: vals, onGrid: onGrid };
   }
 
@@ -165,6 +164,7 @@
       if (s.display === "flex" || s.display === "grid" || s.display === "inline-flex") out.push(s.display);
       else out.push("[display:" + s.display + "]");
     }
+    if (s.position && s.position !== d.position) out.push(s.position);
     if (s.flexDirection === "column") out.push("flex-col");
     if (s.borderRadius && s.borderRadius !== d.borderRadius) {
       out.push(TW_RADIUS[s.borderRadius] || "rounded-[" + s.borderRadius + "]");
