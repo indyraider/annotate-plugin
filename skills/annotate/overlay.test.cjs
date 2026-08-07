@@ -317,9 +317,26 @@ assert.ok(!/_rsc=|Next-Action|__reactFiber|\/api\/attachments\/|supabase/i.test(
   "study.js makes no framework assumptions");
 
 // Read-only on the host page: Study must never mutate the site it inspects.
-// Overlay chrome is exempt (it is created, not injected into existing nodes).
+// Overlay chrome (createChrome) is exempt — it is created, not injected into
+// existing nodes. Excise it by brace-matched index, not by an unanchored lazy
+// regex: `[\s\S]*?function createChrome[\s\S]*?\n  }` looks like it strips just
+// the function, but the leading `[\s\S]*?` is lazy and unanchored, so it eats
+// everything from the START of the file through createChrome's first closing
+// brace — silently exempting readStyles/diffDefaults/matchedRules/readElement
+// (everything ABOVE createChrome) from this check too. Caught in review.
+function exciseFunction(src, name) {
+  const start = src.indexOf("function " + name);
+  if (start === -1) return src;                     // nothing to excise
+  const braceStart = src.indexOf("{", start);
+  let depth = 0, i = braceStart;
+  for (; i < src.length; i++) {
+    if (src[i] === "{") depth++;
+    else if (src[i] === "}") { depth--; if (depth === 0) { i++; break; } }
+  }
+  return src.slice(0, start) + src.slice(i);
+}
 assert.ok(!/\.setAttribute\(|\.innerHTML\s*=|\.remove\(\)/.test(
-  studySrc.replace(/[\s\S]*?function createChrome[\s\S]*?\n  }/g, "")),
+  exciseFunction(studySrc, "createChrome")),
   "study.js does not mutate the inspected page");
 
 // Cross-origin stylesheets throw on .cssRules — that is normal and must be

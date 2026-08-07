@@ -56,6 +56,35 @@
     return out;
   }
 
+  // A group rule's own label, so the readout can say WHY a matched rule
+  // applies (e.g. only at desktop width) — not just that it does.
+  function groupLabel(rule) {
+    if (rule.media && rule.media.mediaText) return "@media " + rule.media.mediaText;
+    if (typeof rule.conditionText === "string") return "@supports " + rule.conditionText;
+    if (typeof rule.name === "string") return "@layer" + (rule.name ? " " + rule.name : "");
+    return "@import";
+  }
+
+  // `rule.selectorText` is undefined for CSSMediaRule/CSSSupportsRule/
+  // CSSImportRule/@layer — almost all responsive, dark-mode and @layer CSS
+  // in a modern stylesheet lives inside one of these. Recurse into their
+  // nested rules (capped at 4 levels — a pathological stylesheet must not
+  // hang the readout), carrying the enclosing condition(s) as context.
+  function walkRules(rules, el, depth, ctx, out) {
+    if (!rules || depth > 4) return;
+    for (var j = 0; j < rules.length; j++) {
+      var rule = rules[j];
+      if (rule.selectorText) {
+        try { if (el.matches(rule.selectorText)) out.push({ selector: rule.selectorText, context: ctx.length ? ctx.join(" ") : null }); }
+        catch (e2) { continue; }
+        continue;
+      }
+      var nested = null;
+      try { nested = rule.cssRules || (rule.styleSheet && rule.styleSheet.cssRules); } catch (e3) { nested = null; }
+      if (nested) walkRules(nested, el, depth + 1, ctx.concat(groupLabel(rule)), out);
+    }
+  }
+
   // Which CSS rules in the document actually matched this element, and why.
   // Two things bite here, both normal on real sites, neither an error:
   //  - a cross-origin stylesheet (any Google Font, any CDN) throws on .cssRules
@@ -68,12 +97,7 @@
       var rules;
       try { rules = sheets[i].cssRules; } catch (e) { continue; }
       if (!rules) continue;
-      for (var j = 0; j < rules.length; j++) {
-        var rule = rules[j];
-        if (!rule.selectorText) continue;
-        try { if (el.matches(rule.selectorText)) out.push(rule.selectorText); }
-        catch (e2) { continue; }
-      }
+      walkRules(rules, el, 0, [], out);
     }
     return out;
   }
@@ -106,9 +130,15 @@
   // highlight box and inspector card in ui.js. ----
   function createChrome(pal) {
     var panel = document.createElement("div"); panel.className = "__ann-ui";
+    // pointerEvents starts at "none": the panel sits 14px from the cursor, close
+    // enough that a click meant for the page can land on its footprint, and the
+    // browser resolves that hit BEFORE any JS runs — Shift can't rescue a click
+    // that never reaches the page element at all. setInteractive(true) (below)
+    // flips it back on only while the cursor is actually over it, so scrolling
+    // still works but a click aimed at the underlying page always passes through.
     Object.assign(panel.style, {
       position: "fixed", zIndex: Z, display: "none", maxWidth: "320px", maxHeight: "72vh",
-      overflow: "auto", background: pal.elevated, border: "1px solid " + pal.border,
+      overflow: "auto", pointerEvents: "none", background: pal.elevated, border: "1px solid " + pal.border,
       borderRadius: "8px", padding: "10px 12px", font: "11px/1.6 " + MONO, color: pal.text,
       boxShadow: "0 8px 30px rgba(0,0,0,.4)"
     });
@@ -152,7 +182,18 @@
     function hide() { panel.style.display = "none"; }
     function destroy() { if (panel.parentNode) panel.parentNode.removeChild(panel); }
 
-    return { render: render, show: show, hide: hide, destroy: destroy };
+    // mouseenter/mouseleave never fire on a pointer-events:none element (it is
+    // never a hit-test target, which is the whole point) — so the flip has to
+    // be driven from the page's own mousemove, comparing cursor position against
+    // the panel's own rect, not from events on the panel itself.
+    function hitTest(x, y) {
+      if (panel.style.display === "none") return false;
+      var r = panel.getBoundingClientRect();
+      return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    }
+    function setInteractive(v) { panel.style.pointerEvents = v ? "auto" : "none"; }
+
+    return { render: render, show: show, hide: hide, destroy: destroy, hitTest: hitTest, setInteractive: setInteractive };
   }
 
   // ctx = { pal, ui, state, save, persist, notify } — see index.js (Task 6).
@@ -160,7 +201,7 @@
   // is accepted so this module stays a drop-in the same way point.js/measure.js are.
   function create(ctx) {
     var pal = ctx.pal, ui = ctx.ui;
-    var chrome = null, pinned = null;
+    var chrome = null, pinned = null, lastEl = null;
 
     function paint(el, x, y) {
       chrome.render(readElement(el));
@@ -170,7 +211,16 @@
     // Hover tracks the live readout; a pin (click) freezes it on one element
     // so the panel can be read while the mouse moves elsewhere.
     function onMousemove(e) {
+      // Cheap on every move regardless of target — a rect compare, not a readout.
+      chrome.setInteractive(chrome.hitTest(e.clientX, e.clientY));
       if (pinned || ui.isOurs(e.target)) return;
+      // Same target as last move: skip the readout entirely. matchedRules()
+      // walks every stylesheet and every rule via el.matches() — on a real
+      // production site that cost scales with the WHOLE site's CSS, and
+      // mousemove fires continuously, so re-running it for a target that
+      // hasn't changed is pure waste.
+      if (e.target === lastEl) return;
+      lastEl = e.target;
       ui.showHighlight(e.target);
       paint(e.target, e.clientX, e.clientY);
     }
@@ -203,7 +253,7 @@
       attached = false;
       document.removeEventListener("mousemove", onMousemove, true);
       document.removeEventListener("click", onClick, true);
-      pinned = null;
+      pinned = null; lastEl = null;
       ui.hideHighlight();
       if (chrome) { chrome.destroy(); chrome = null; }
     }
