@@ -1,0 +1,12 @@
+# SDD ledger — plan: /private/tmp/claude-501/-Users-mattjones-Documents-brandscout-enterprise/a9b28fab-8678-4b98-8ed5-7d23a7b5a0b4/scratchpad/wt-1b/docs/superpowers/plans/2026-08-07-annotate-phase1b-library.md
+
+Code repo: /Users/mattjones/Documents/annotate-plugin (branch matt/phase1b-library, base c8a9939)
+
+Task 1: fix round 1/5 (2 Important addressed — classifier was NON-DETERMINISTIC around a 0 token (same value + same scale reordered flipped new/conflict, and proximity to 0 always leaned 'new' via an Infinity ratio, the UNSAFE direction); reconcile silently DROPPED scalars and SHREDDED strings char-by-char, the exact 'silently lost decision' the task exists to prevent. commit e02160e)
+Task 1: complete (commits c8a9939..e02160e, review clean). Controller verified both fixes by direct execution; implementer ran sabotage checks on the NEW code (order-independence + array normalisation) and both fired. Recording that in lieu of a dispatched scoped re-review — final whole-branch review should double-check.
+Task 2: fix round 1/5 (1 Important addressed — the location.href guard was OR across favourite()/takeFavourite(), so a regression on takeFavourite()'s fallback path alone would have passed green. Split into two independent assertions. commit d62e1c4)
+Task 2: complete (commits e02160e..d62e1c4, review Approved). Controller independently broke takeFavourite()'s fallback ONLY and confirmed exit 1 with the takeFavourite-specific assertion firing — the exact case the old OR missed. Tree restored clean.
+Task 2: minor (deferred): no DOM-driven test of pin -> favourite -> re-pin -> takeFavourite() exercising the favData reset. Reviewer traced it correct via all 3 'pinned' assignment sites; Task 5's browser pass should cover it for real.
+Task 2: minor (deferred, pre-existing): ui.js has no 'does not mutate the page' assertion of its own, unlike study.js.
+
+=== PAUSED AFTER TASK 2 OF 5 — controller checkpointed with the user. Remaining: T3 file format + neutral seed template, T4 promote procedure in SKILL.md, T5 end-to-end browser verification against a REAL PUBLIC SITE (not localhost), then final whole-branch review. ===
