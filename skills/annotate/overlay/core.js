@@ -270,6 +270,18 @@
     var m = DIMENSION.exec(String(v));
     return m ? { n: Number(m[1]), unit: m[2] || "" } : null;
   }
+  // Pure: the next mode in the keyboard rotation. "off" is always first, so the
+  // rotation always passes back through a state where the page is usable — a
+  // cycle of modes only would leave no way to just USE the site being studied.
+  // `enabledKeys` comes from the toolbar's own list minus anything disabled, so
+  // a mode that ships greyed out can never become a dead stop in the rotation.
+  // An unrecognised current mode returns "off" (indexOf -1 -> index 0), which is
+  // the safe direction: worst case the user presses the key once more.
+  function nextMode(current, enabledKeys) {
+    var cycle = ["off"].concat(enabledKeys || []);
+    return cycle[(cycle.indexOf(current) + 1) % cycle.length];
+  }
+
   // Pure: is this computed value the ABSENCE of a decision rather than one?
   // The computed-style read answers every property whether or not the author
   // set it, so a studied element hands back `boxShadow: "none"`, `paddingTop: "0px"`
@@ -412,6 +424,6 @@
     defaultsFor: defaultsFor, toTailwind: toTailwind, isRootSelector: isRootSelector,
     isOwnModuleUrl: isOwnModuleUrl, isMotionFingerprintUrl: isMotionFingerprintUrl,
     nearestInScale: nearestInScale, classifyValue: classifyValue, reconcile: reconcile,
-    isAbsentValue: isAbsentValue,
+    isAbsentValue: isAbsentValue, nextMode: nextMode,
   };
 });

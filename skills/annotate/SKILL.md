@@ -1,6 +1,6 @@
 ---
 name: annotate
-description: Point-and-comment on the live local app, plus a read-only Study mode that reverse-engineers any site's design system. Invoked as /annotate [url]. Opens the Playwright browser, injects an inspect-element-style overlay so Matt can hover, click, and leave comments (each auto-screenshotted), then watches for those comments and fixes them. Study mode (the 4th pill state) works against any URL, not just the local app, and never modifies the page it inspects. Studied elements can be favourited to a design-studies/ library and promoted, through a reconcile step, into the user's own design language. Dev tool only — never shipped, exempt from mobile-parity.
+description: Point-and-comment on the live local app, plus a read-only Study mode that reverse-engineers any site's design system. Invoked as /annotate [url]. Opens the Playwright browser, injects an inspect-element-style overlay so Matt can hover, click, and leave comments (each auto-screenshotted), then watches for those comments and fixes them. Study mode (the 4th toolbar tab) works against any URL, not just the local app, and never modifies the page it inspects. Studied elements can be favourited to a design-studies/ library and promoted, through a reconcile step, into the user's own design language. Dev tool only — never shipped, exempt from mobile-parity.
 ---
 
 # /annotate — point-and-comment on the live app
@@ -49,26 +49,39 @@ rather than pasted into your context.
    is what replaces pasting the old 628-line single-file implementation into
    `browser_evaluate` on every run (~24k tokens each time). Idempotent: if the overlay
    is already running, `__annotatorBoot` resolves `"already-running"` and touches nothing.
-5. **Tell Matt**, briefly: a pill is bottom-right, **starts OFF** (browse freely).
-   The pill cycles **off → on → measure → study → off** (click it, or press **Alt+A**
-   repeatedly). Flip it **ON** to comment; press again for **measure** mode (records
-   timings, clicks pass straight through — see below); press again for **study** mode
-   (reverse-engineers styles/design-system/motion on whatever's under the cursor,
-   read-only, works on any site — see the Study section below); again to return to
-   off. In annotate (**on**) mode, hover highlights the
-   element **and shows an inspector card** (computed font/size/color/padding/etc.), click
-   opens a comment box, **⌘/Ctrl+Enter** or **Save** submits. In the box he can **⌘V a
-   screenshot** (⌃⌘⇧4 copies one straight to the clipboard) or **drag an image file onto
-   the box** from Finder — a thumbnail confirms it, ✕ removes it.
-   **Hold Shift to "peek"** — click through to the app for one action (open a
-   dropdown/modal) without leaving annotate mode. Flip OFF to keep browsing. The pill
-   shows the running count. Say **"done"** to stop.
+5. **Tell Matt**, briefly: a toolbar sits **bottom-centre**, and it **starts with no mode
+   selected** (browse freely). Top row never changes — **Point · Measure · Compare · Study**,
+   then **Queue**; the second row shows whatever the selected mode needs and collapses when
+   nothing is selected. **Click the mode you want** (no cycling), or press **Alt+A** to
+   rotate `off → Point → Measure → Study → off`. **Clicking the mode you are already in
+   leaves it**, which is how you get back to using the page.
+   - **Point** — hover highlights the element **and shows an inspector card** (computed
+     font/size/color/padding/etc.), click opens a comment box, **⌘/Ctrl+Enter** or **Save**
+     submits. In the box he can **⌘V a screenshot** (⌃⌘⇧4 copies one straight to the
+     clipboard) or **drag an image file onto the box** from Finder — a thumbnail confirms
+     it, ✕ removes it. **Hold Shift to "peek"** — click through for one action (open a
+     dropdown/modal) without leaving the mode.
+   - **Measure** — records timings, clicks pass straight through (see below).
+   - **Compare** — **greyed out**; it is spec Phase 3 and not built. It ships visible on
+     purpose so the top row never has to grow a button and move the others.
+   - **Study** — reverse-engineers styles/design-system/motion, read-only, works on any
+     site. Row 2 holds the note/tags/★ Save favourite inputs.
+
+   **Queue** opens a panel of saved comments on demand and carries the running count;
+   clicking a row scrolls that annotation into view. Say **"done"** to stop.
+
+   **The toolbar's controls are wired through one delegated listener on `document`, in the
+   capture phase.** A host page that runs its own capture handler and calls
+   `stopPropagation` — linear.app does, on the first click after boot — kills any
+   per-button listener stone dead, and the toolbar is the only way into this tool. If you
+   ever split that wiring back out per button, the tool silently stops responding on
+   exactly the sites it is most worth using. `overlay.test.cjs` asserts there is exactly one.
 
 ## Measure mode
 
-The pill cycles **off → on → measure → study → off** (click, or Alt+A). In measure mode the
+Select **Measure** in the toolbar (or Alt+A round to it). In measure mode the
 overlay records and **does not touch clicks** — Matt uses the app completely normally while
-it watches. The pill shows the running entry count.
+it watches. Row 2 of the toolbar shows the running entry count.
 
 Entries come back on the same poll, in `perf`. Five kinds, each with `t` (ms since page load):
 
@@ -99,7 +112,7 @@ browser is. The first page load is not captured — recording starts when the mo
 
 ## Study mode
 
-The pill's 4th state. **This is the headline capability of the whole tool — Study works
+The toolbar's 4th tab. **This is the headline capability of the whole tool — Study works
 against any URL, not just the local app you're building.** `/annotate https://someothersite.com`
 is a completely valid invocation: point Study at a competitor's site, a piece of design
 inspiration, anything on the public web, and take its design system apart.
@@ -114,7 +127,7 @@ goes through `getComputedStyle`/`getBoundingClientRect`/`getAnimations`, and its
 comment pins in the other modes.
 
 **Driving it:**
-1. Cycle the pill to **study** (Setup step 5), or ask Matt to.
+1. Click **Study** in the toolbar (Setup step 5), or ask Matt to.
 2. Hover previews the readout live; **click an element to pin it** — the panel then stays
    put while the mouse moves elsewhere, so you can pull the readout after moving on. Either
    Matt clicks the target himself, or you drive it with `browser_click`.
@@ -477,7 +490,7 @@ Repeat until Matt says done (or the browser closes / evaluate errors):
 
 - The overlay is **session-ephemeral** (mirrored to `localStorage` only). Nothing is
   stored server-side. This is the intended "quick tool" tradeoff.
-- **Toggling the mode off (pill or Alt+A) while a comment box is open discards the typed
+- **Leaving the mode (clicking the active tab, or Alt+A) while a comment box is open discards the typed
   text.** `disable()` closes the box on the way out; this is intentional, not a bug — the
   box's own Escape handler only exists while the mode is enabled, so leaving the box open
   across a mode switch would make it un-closable. Save or Cancel before toggling off.

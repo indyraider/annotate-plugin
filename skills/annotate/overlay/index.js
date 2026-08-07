@@ -5,8 +5,9 @@
 // module loaded — Task 6's loader replaces the old bootstrap-into-localStorage
 // mechanism entirely, so that block from overlay.js is deliberately NOT here.
 ;(function (root, factory) {
-  var palette, ui, point, measure, study;
+  var core, palette, ui, point, measure, study;
   if (typeof module !== "undefined" && module.exports) {
+    core = require("./core.js");
     palette = require("./palette.js");
     ui = require("./ui.js");
     point = require("./point.js");
@@ -14,12 +15,13 @@
     study = require("./study.js");
   } else {
     var mods = root.__annotatorMods || {};
-    palette = mods.palette; ui = mods.ui; point = mods.point; measure = mods.measure; study = mods.study;
+    core = mods.core; palette = mods.palette; ui = mods.ui; point = mods.point; measure = mods.measure; study = mods.study;
   }
-  var api = factory(palette, ui, point, measure, study);
+  var api = factory(core, palette, ui, point, measure, study);
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else { root.__annotatorMods = root.__annotatorMods || {}; root.__annotatorMods.index = api; }
-})(typeof self !== "undefined" ? self : this, function (palette, ui, point, measure, study) {
+})(typeof self !== "undefined" ? self : this, function (core, palette, ui, point, measure, study) {
+  if (!core) throw new Error("annotate: index.js requires core.js to load first");
   if (!palette) throw new Error("annotate: index.js requires palette.js to load first");
   if (!ui) throw new Error("annotate: index.js requires ui.js to load first");
   if (!point) throw new Error("annotate: index.js requires point.js to load first");
@@ -44,7 +46,7 @@
       window.__annotations.push(record);
       if (waiter) { var w = waiter; waiter = null; clearTimeout(w.timer); w.resolve(); }  // wake the long-poll
     }
-    function notify() { updatePill(); }
+    function notify() { updateToolbar(); }
 
     var pal = palette.build();
     var uiHandles = ui.create(pal);
@@ -53,40 +55,66 @@
     var measureMode = measure.create(ctx);
     var studyMode = study.create(ctx);
 
-    function updatePill() {
+    // The toolbar's fixed top row. The internal key for Point is "on" — every
+    // mode guard in point.js reads `mode !== "on"` and inverting that makes the
+    // other three modes start swallowing clicks, so the LABEL changes here and
+    // the key does not.
+    //
+    // Compare ships disabled rather than absent: Layout B's top row is meant to
+    // never change, and a row that grows a fifth button later moves everything
+    // the user has learned to aim at. It is spec §8 Phase 3.
+    var MODES = [
+      { key: "on", label: "Point", title: "Comment on your own app" },
+      { key: "measure", label: "Measure", title: "Record real performance while you drive" },
+      { key: "compare", label: "Compare", title: "Baseline vs re-run — not built yet (Phase 3)", disabled: true },
+      { key: "study", label: "Study", title: "Take apart any site's design" }
+    ];
+    // Alt+A's cycle. Derived from MODES rather than written out, so a mode that
+    // ships disabled can never become a dead stop in the rotation. The rotation
+    // itself is core.nextMode — pure, and tested in Node rather than grepped for.
+    var CYCLE_KEYS = MODES.filter(function (m) { return !m.disabled; }).map(function (m) { return m.key; });
+
+    function updateToolbar() {
       var m = state.mode, c = window.__annotations.length;
+      uiHandles.setActiveMode(m);
+      uiHandles.setQueueCount(c);
+      uiHandles.setQueueItems(window.__annotations.map(function (a) {
+        return { id: a.id, n: a.n, text: a.comment || "(no text)", status: a.status };
+      }), function (id) { if (pointMode.reveal) pointMode.reveal(id); });
+
+      // Row 2 is whatever the selected mode needs. ui.js has no idea any of
+      // these strings exist; it draws the node it is handed.
       if (m === "measure") {
-        uiHandles.setPillLabel("◉ Measure: REC" + (measureMode.size() ? " · " + measureMode.size() : ""), pal.accent, pal.accentFg);
         uiHandles.setClickHint("Passes through (recording)");
+        uiHandles.setModeTools(uiHandles.toolsText("Recording — clicks pass straight through · " + measureMode.size() + " entries"));
       } else if (m === "study") {
-        uiHandles.setPillLabel("◈ Study", pal.accent, pal.accentFg);
         uiHandles.setClickHint("Pin the readout");
+        uiHandles.setModeTools(uiHandles.favPanel);
       } else if (m === "on") {
-        uiHandles.setPillLabel("● Annotate: ON" + (c ? " · " + c : ""), pal.accent, pal.accentFg);
         uiHandles.setClickHint("Leave a comment");
+        uiHandles.setModeTools(uiHandles.toolsText("Click an element to comment · hold Shift to click through"));
       } else {
-        uiHandles.setPillLabel("○ Annotate: OFF" + (c ? " · " + c : ""), pal.surface2, pal.text2);
         uiHandles.setClickHint("Leave a comment");
+        uiHandles.setModeTools(null);
       }
-      // The favourite note/tag input only makes sense while Study is active —
-      // ui.js owns no mode state (see the guard test), so this decision, like
-      // the click-hint text above, lives here.
-      uiHandles.setFavouriteVisible(m === "study");
     }
 
-    // off -> on -> measure -> study -> off. point mode (crosshair/highlight/inspector)
-    // and study mode (hover/pin readout) are entered/left via enable()/disable();
-    // measure mode is entirely passive (start()/stop()).
-    function toggle() {
-      var m = state.mode;
-      var next = m === "off" ? "on" : m === "on" ? "measure" : m === "measure" ? "study" : "off";
+    // point mode (crosshair/highlight/inspector) and study mode (hover/pin
+    // readout) are entered/left via enable()/disable(); measure mode is
+    // entirely passive (start()/stop()).
+    function setMode(next) {
       state.mode = next;
       if (next === "on") pointMode.enable(); else pointMode.disable();
       if (next === "measure") measureMode.start(); else measureMode.stop();
       if (next === "study") studyMode.enable(); else studyMode.disable();
-      updatePill();
+      updateToolbar();
     }
-    uiHandles.pill.addEventListener("click", toggle);
+    // Clicking the mode you are already in leaves it. Without this, "off" is
+    // only reachable by cycling all the way round with Alt+A, and off is the
+    // state you want the instant you need to actually USE the page.
+    function selectMode(key) { setMode(state.mode === key ? "off" : key); }
+    function toggle() { setMode(core.nextMode(state.mode, CYCLE_KEYS)); }
+    uiHandles.setModes(MODES, selectMode);
 
     // ui.js only knows it collected a note and a comma-separated tags string —
     // it has no idea a "study mode" or a "favourite" concept exists. index.js
@@ -108,7 +136,7 @@
     // Mirrors __annotatorDrain for perf entries. Returns [] if measure mode never ran.
     window.__annotatorPerfTake = function () {
       var out = measureMode.take();
-      updatePill();
+      updateToolbar();
       return out;
     };
     window.__annotatorWait = function (timeoutMs) {
@@ -131,7 +159,7 @@
     // {status:"sampling"} placeholder either.
     window.__annotatorStudyFavourite = function () { return studyMode.takeFavourite(); };
 
-    updatePill();
+    updateToolbar();
     console.log("[annotate] overlay ready — Alt+A toggle · hover = inspect · Shift = click-through · ⌘V attaches an image · ? = shortcuts");
   }
 
