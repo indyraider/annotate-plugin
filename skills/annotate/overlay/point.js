@@ -219,7 +219,7 @@
     function enable() {
       if (attached) return;
       attached = true;
-      document.documentElement.classList.add("__ann-cross");
+      ui.setCrosshair(true);
       document.addEventListener("mousemove", onMousemove, true);
       document.addEventListener("pointerdown", blockNav, true);
       document.addEventListener("mousedown", blockNav, true);
@@ -230,7 +230,7 @@
     function disable() {
       if (!attached) return;
       attached = false;
-      document.documentElement.classList.remove("__ann-cross");
+      ui.setCrosshair(false);
       document.removeEventListener("mousemove", onMousemove, true);
       document.removeEventListener("pointerdown", blockNav, true);
       document.removeEventListener("mousedown", blockNav, true);

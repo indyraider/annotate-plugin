@@ -120,7 +120,7 @@ assert.ok(!/mode\s*[!=]==?\s*["']on["']/.test(uiSrc), "ui.js does not branch on 
 
 // The file-chooser ban and the mode-guard rule are overlay-wide invariants.
 // They are re-asserted per module so a future split cannot quietly drop them.
-for (const f of ["core.js", "palette.js", "ui.js"]) {
+for (const f of ["core.js", "palette.js", "fontpicker.js", "ui.js"]) {
   const src = fs.readFileSync(MOD(f), "utf8");
   assert.ok(!/\.type\s*=\s*["']file["']/.test(src), "no file input in " + f + " (its chooser jams the agent)");
 }
@@ -143,7 +143,7 @@ const paletteKeys = ["elevated", "surface", "surface2", "hover", "border", "hair
 for (const k of paletteKeys) {
   assert.ok(new RegExp(k + "\\s*:").test(paletteSrc), "palette.build() return must include key " + k);
 }
-const uiKeys = ["showHighlight", "hideHighlight", "showInspector", "hideInspector", "bar", "toolbar", "guide", "help", "setModes", "setActiveMode", "setModeTools", "isOurs"];
+const uiKeys = ["showHighlight", "hideHighlight", "showInspector", "hideInspector", "bar", "toolbar", "guide", "help", "setModes", "setActiveMode", "setModeTools", "isOurs", "fontsPanel", "setFontOptions", "setFontSlots", "onFontSlotChange"];
 for (const k of uiKeys) {
   assert.ok(new RegExp(k + "\\s*:").test(uiSrc), "ui.create() handles must include key " + k);
 }
@@ -158,7 +158,7 @@ assert.ok(pointGuards.length >= 4, "point.js keeps its mode !== 'on' guards, fou
 assert.ok(!/mode\s*===\s*["']off["']/.test(pointSrc), "no === 'off' guards (breaks with a third mode)");
 
 // No file input, in every module that exists yet.
-for (const f of ["point.js", "measure.js", "index.js"]) {
+for (const f of ["point.js", "measure.js", "fonts.js", "index.js"]) {
   const src = fs.readFileSync(MOD(f), "utf8");
   assert.ok(!/\.type\s*=\s*["']file["']/.test(src), "no file input in " + f + " (its chooser jams the agent)");
 }
@@ -189,7 +189,7 @@ const indexSrc = fs.readFileSync(MOD("index.js"), "utf8");
 
 // The four window entry points the skill's watch loop calls. Renaming any of
 // them breaks the agent silently — the poll just never returns anything.
-for (const api of ["__annotatorDrain", "__annotatorWait", "__annotatorPerfTake", "__annotatorReveal", "__annotatorImageTake"]) {
+for (const api of ["__annotatorDrain", "__annotatorWait", "__annotatorPerfTake", "__annotatorReveal", "__annotatorImageTake", "__annotatorFontsTake"]) {
   assert.ok(indexSrc.indexOf("window." + api) !== -1, "index.js still exposes " + api);
 }
 
@@ -259,7 +259,7 @@ assert.deepStrictEqual(ownModuleFiles.slice().sort(), onDisk,
 // study.js requires study-motion.js, and index.js requires everything. The list
 // is consumed in order by the boot snippet, so its order is load-bearing.
 assert.deepStrictEqual(ownModuleFiles,
-  ["core.js", "palette.js", "ui.js", "point.js", "measure.js", "study-motion.js", "study.js", "index.js"],
+  ["core.js", "palette.js", "fontpicker.js", "ui.js", "point.js", "measure.js", "study-motion.js", "study.js", "fonts.js", "index.js"],
   "OWN_MODULE_FILES is in dependency order — it is what the boot snippet iterates");
 
 // SKILL.md carries the same list in its boot snippet, and prose drifts. An
@@ -1155,10 +1155,40 @@ assert.ok(/pick\(h, "backgroundColor", null\)/.test(paletteSrc), "the background
 // A per-button listener sits downstream of that and simply loses; a listener
 // already on document cannot be silenced by stopPropagation from at or below it.
 // The failure this prevents is the entire tool — the toolbar is the only way in.
-var uiDocListeners = uiSrc.match(/document\.addEventListener\(/g) || [];
-assert.strictEqual(uiDocListeners.length, 1, "ui.js wires its chrome through exactly one document listener, got " + uiDocListeners.length);
+//
+// This began as "exactly one listener" and is now "exactly one PER EVENT TYPE,
+// all delegated, all capture" — because Fonts mode added a <select> and a
+// datalist <input>, which report through `change` and never fire the click
+// listener at all. The count was never the invariant; delegation from document
+// in the capture phase is. Pinning the type list keeps a third listener from
+// being added casually while letting the real reason for a second one through.
+var uiDocTypes = (uiSrc.match(/document\.addEventListener\("([a-z]+)"/g) || [])
+  .map(function (s) { return /"([a-z]+)"/.exec(s)[1]; }).sort();
+assert.deepStrictEqual(uiDocTypes, ["change", "click"],
+  "ui.js delegates through exactly one document listener per event type, got " + JSON.stringify(uiDocTypes));
+var uiDocRaw = uiSrc.match(/document\.addEventListener\(/g) || [];
+assert.strictEqual(uiDocRaw.length, uiDocTypes.length,
+  "every document listener in ui.js names a literal event type — a computed one cannot be checked here");
+
+// fontpicker.js is chrome too, and the picker is the only way to choose a font
+// — so the same rule binds it. Its listeners must be on document, in capture,
+// one per type, or a host page that eats propagation makes the picker inert.
+var fpSrc = fs.readFileSync(MOD("fontpicker.js"), "utf8");
+var fpDocTypes = (fpSrc.match(/document\.addEventListener\("([a-z]+)"/g) || [])
+  .map(function (s) { return /"([a-z]+)"/.exec(s)[1]; }).sort();
+assert.deepStrictEqual(fpDocTypes, ["click", "keydown"],
+  "fontpicker.js delegates through exactly one document listener per event type, got " + JSON.stringify(fpDocTypes));
+fpDocTypes.forEach(function (type) {
+  assert.ok(new RegExp('document\\.addEventListener\\("' + type + '",[\\s\\S]{0,2400}?\\}, true\\);').test(fpSrc),
+    "fontpicker.js's " + type + " listener is registered in the CAPTURE phase");
+});
 assert.ok(/document\.addEventListener\("click",[\s\S]{0,900}?\}, true\);/.test(uiSrc),
-  "ui.js's delegated chrome listener is registered in the CAPTURE phase");
+  "ui.js's delegated click listener is registered in the CAPTURE phase");
+assert.ok(/document\.addEventListener\("change",[\s\S]{0,600}?\}, true\);/.test(uiSrc),
+  "ui.js's delegated change listener is registered in the CAPTURE phase too — a bubble-phase one loses to the same stopPropagation");
+// The change path needs the SAME two guards the click path has, or a host page
+// with its own data-ann-change attribute could drive our fonts rows.
+assert.ok(/closest\("\[data-ann-change\]"\)/.test(uiSrc), "the delegated change listener resolves the control via closest()");
 
 // Delegation is only safe if it refuses to act on the host page's own markup —
 // a site with its own data-ann-mode attribute must not be able to drive us.
@@ -1230,6 +1260,322 @@ assert.ok(skillSrc.indexOf("templates/design-language.md") !== -1,
   "SKILL.md points at the seed template by path");
 assert.ok(/__annotatorStudyFavourite/.test(skillSrc),
   "SKILL.md documents the favourite entry point");
+
+// ---- Fonts mode: the family-name parser ------------------------------------
+//
+// The whole mode groups elements by "which font is this in", and that group key
+// comes from a computed `font-family` string — which is a LIST, quoted
+// inconsistently by every engine. Get this wrong and two slots silently merge
+// (or one splits in half) with nothing on screen to say so.
+assert.strictEqual(typeof core.firstFamily, "function", "core exports firstFamily");
+assert.strictEqual(core.firstFamily('"Inter", -apple-system, sans-serif'), "Inter", "strips double quotes, takes the first");
+assert.strictEqual(core.firstFamily("Inter, sans-serif"), "Inter", "unquoted names work");
+assert.strictEqual(core.firstFamily("'Playfair Display', serif"), "Playfair Display", "single quotes, spaces kept");
+assert.strictEqual(core.firstFamily("  Inter  ,  serif "), "Inter", "trims around the name");
+// A generic is a legitimate group: every element that inherited the page
+// default really is one font, and refusing to slot it would make the most
+// common case on an unstyled page unclickable.
+assert.strictEqual(core.firstFamily("sans-serif"), "sans-serif", "a bare generic is still a slot");
+// The case a naive split(",")[0] gets wrong. Rare, but it fails SILENTLY —
+// half a font name as a group key matches nothing and the swap appears dead.
+assert.strictEqual(core.firstFamily('"Foo, Bar", serif'), "Foo, Bar", "a comma INSIDE quotes is part of the name");
+assert.strictEqual(core.firstFamily('"Say \\"Hi\\"", serif'), 'Say "Hi"', "escaped quotes unescape");
+// Nothing to group by must be falsy, never the string "undefined" — index.js
+// tests the result to decide whether a click made a slot at all.
+assert.strictEqual(core.firstFamily(""), "", "empty string in, empty string out");
+assert.strictEqual(core.firstFamily(null), "", "null is not a font");
+assert.strictEqual(core.firstFamily(undefined), "", "undefined is not a font");
+
+// ---- Fonts mode -----------------------------------------------------------
+
+const fontsSrc = fs.readFileSync(MOD("fonts.js"), "utf8");
+const fontsMod = require(MOD("fonts.js"));
+assert.strictEqual(typeof fontsMod.create, "function", "fonts exports create");
+assert.ok(fontsMod.WEB_FONTS.length > 20, "the curated web list is actually a list");
+assert.strictEqual(fontsMod.WEIGHTS[0], "keep", "'keep' is the default weight — a mode that silently reweights text is lying about what it changed");
+
+// Fonts is the one mode that writes to the host page, so the two rules that
+// keep that honest are asserted, not trusted.
+//
+// 1. It must skip our own chrome. Without this the sweep restyles the toolbar
+//    it is being driven from, mid-click.
+assert.ok(/closest\(["']\.__ann-ui["']\)/.test(fontsSrc), "fonts.js skips .__ann-ui when sweeping — otherwise it restyles the toolbar");
+// 2. It must read the previous inline value BEFORE writing. Reset is the whole
+//    promise of this mode; a revert that writes "" instead of what was there
+//    silently deletes a style the page author wrote.
+assert.ok(/getPropertyValue\("font-family"\)/.test(fontsSrc), "fonts.js records the previous inline font-family");
+assert.ok(/getPropertyPriority\("font-family"\)/.test(fontsSrc), "fonts.js records the previous !important flag too — restoring the value without it is still a change");
+
+// This assertion used to say the OPPOSITE — that queryLocalFonts must never be
+// called, because its permission prompt would have nobody to answer it. That was
+// wrong, and it cost the picker 90% of the machine's fonts: a Playwright context
+// can grant `local-fonts` outright, and with it granted there is no prompt at
+// all. Measured 2026-08-20: 449 families enumerated against 43 the probe list
+// could find, and the missing ones were the bought and bundled faces that are
+// the whole reason to browse your own fonts.
+//
+// Checked against CODE, not prose — fonts.js explains this in a comment, and a
+// grep over raw source matches the explanation as readily as the call.
+const fontsCode = fontsSrc.split("\n").filter(function (l) { return l.trim().indexOf("//") !== 0; }).join("\n");
+assert.ok(/queryLocalFonts\(\)/.test(fontsCode), "fonts.js enumerates the real system font list");
+// Both halves matter: enumeration can be refused (no permission, older browser,
+// a prompt nobody answers), and a picker that then shows nothing is worse than
+// one showing a curated handful.
+assert.ok(/probedLocalNames/.test(fontsCode), "the measurement probe survives as the fallback when enumeration is refused");
+assert.ok(/ENUM_CEILING_MS/.test(fontsCode), "enumeration has a ceiling — an unanswered permission prompt never settles at all");
+assert.ok(/catalogueNote/.test(fontsCode), "a fallback catalogue announces itself rather than looking like the whole list");
+assert.ok(/setNote/.test(fpSrc), "the picker has somewhere to show that note");
+
+// The picking affordances Fonts shipped without, both reported live 2026-08-20.
+assert.ok(/ui\.setCrosshair\(true\)/.test(fontsCode), "fonts mode shows the crosshair while it is picking");
+assert.ok(/setCrosshair/.test(uiSrc), "ui.js owns the crosshair");
+assert.ok(!/classList\.(add|remove)\("__ann-cross"\)/.test(pointSrc),
+  "point.js goes through ui.setCrosshair rather than keeping its own copy — the duplicate is why Fonts shipped without a cursor");
+assert.ok(/data-ann-font-pick/.test(fontsCode) && /data-ann-font-pick/.test(uiSrc),
+  "the picked group stays outlined via an attribute the stylesheet draws, so it survives scrolling");
+assert.ok(/focusSlot\(null\)/.test(fontsCode), "the outline is cleared when the mode is left — the swaps stay, the picking aid does not");
+
+// The css2 endpoint returns 400 for a weight a family does not ship, which would
+// break that family's row and nothing else — the most annoying kind of bug to
+// track down. v1 drops unavailable variants silently.
+assert.ok(/fonts\.googleapis\.com\/css\?/.test(fontsSrc), "fonts.js uses the lenient v1 CSS endpoint");
+assert.ok(!/css2\?/.test(fontsSrc), "fonts.js does not use css2 (it 400s on a weight a family lacks)");
+
+// Found live 2026-08-20: probing document.fonts straight after appending the
+// <link> resolves with an empty face list, because the stylesheet has not been
+// parsed yet — so a font that loaded fine accused the site of blocking it. The
+// link's own load/error events are the only signal that is not a race.
+assert.ok(/link\.onload\s*=/.test(fontsCode), "fonts.js waits for the stylesheet's load event before judging whether the font arrived");
+assert.ok(/link\.onerror\s*=/.test(fontsCode), "fonts.js treats the link's error event as the blocked case");
+assert.ok(fontsCode.indexOf("link.onload") < fontsCode.indexOf("document.head.appendChild(link)"),
+  "the handlers are attached BEFORE the link is appended — attaching after it is a second race, on a cached stylesheet");
+
+// ui.js stays mode-blind: it draws the panel, index.js decides it means fonts.
+assert.ok(/fontsPanel\s*:/.test(uiSrc), "ui.js exposes fontsPanel as a node index.js can hand to setModeTools");
+assert.ok(!/fontsMode/.test(uiSrc), "ui.js never calls the fonts mode directly");
+assert.ok(/setModeTools\(uiHandles\.fontsPanel\)/.test(indexSrc), "index.js is the one that puts the fonts panel into row 2");
+assert.ok(/\{ key: "fonts"/.test(indexSrc), "index.js lists Fonts in MODES, so it joins the Alt+A cycle by derivation rather than by hand");
+
+// ---- the swap/revert logic, actually run ----------------------------------
+//
+// The two failures this catches are both silent and both destructive: a slot
+// stealing another slot's elements (so a swap you did not ask for follows you
+// around), and a revert that does not restore exactly what was there (so the
+// page keeps a change after Reset says it is clean). A fake DOM is cheap enough
+// to make both of them fail here instead of on Matt's screen.
+function fakeStyle() {
+  return {
+    _v: {}, _p: {},
+    getPropertyValue: function (k) { return this._v[k] || ""; },
+    getPropertyPriority: function (k) { return this._p[k] || ""; },
+    setProperty: function (k, v, p) { this._v[k] = v; this._p[k] = p || ""; },
+    removeProperty: function (k) { delete this._v[k]; delete this._p[k]; }
+  };
+}
+function fakeEl(name, computedFamily) {
+  return {
+    name: name, _family: computedFamily, style: fakeStyle(), _attrs: {},
+    closest: function () { return null; },
+    setAttribute: function (k, v) { this._attrs[k] = v; },
+    removeAttribute: function (k) { delete this._attrs[k]; },
+    hasAttribute: function (k) { return Object.prototype.hasOwnProperty.call(this._attrs, k); }
+  };
+}
+// Which elements currently carry the picked-group outline.
+function marked() { return DOM.filter(function (e) { return e.hasAttribute("data-ann-font-pick"); }).map(function (e) { return e.name; }); }
+
+const INSTALLED = ["Futura", "Inter"];
+const h1 = fakeEl("h1", "HeadingFont");
+const h2 = fakeEl("h2", "HeadingFont");
+const span = fakeEl("span", "Futura");
+const p = fakeEl("p", "BodyFont");
+// A page whose author already set an inline font-family, with !important. It is
+// still in the heading group (that IS its computed font), and it is the element
+// that proves revert restores rather than clears.
+const legacy = fakeEl("legacy", "HeadingFont");
+legacy.style.setProperty("font-family", '"HeadingFont", serif', "important");
+const DOM = [h1, h2, span, p, legacy];
+
+const docHandlers = {};
+global.document = {
+  addEventListener: function (type, fn) { docHandlers[type] = fn; },
+  removeEventListener: function (type) { delete docHandlers[type]; },
+  // Selector-aware enough for the two queries fonts.js actually makes: the
+  // full sweep, and the "what is currently outlined" lookup.
+  querySelectorAll: function (sel) {
+    if (sel === "*") return DOM;
+    var m = /^\[([a-z-]+)\]$/.exec(sel);
+    if (m) return DOM.filter(function (e) { return e.hasAttribute(m[1]); });
+    return [];
+  },
+  head: { appendChild: function () {} },
+  createElement: function () {
+    return { getContext: function () {
+      return {
+        font: "",
+        // Deterministic stand-in for real text measurement: a font stack whose
+        // FIRST family is installed measures differently from the bare generic.
+        measureText: function () {
+          var first = core.firstFamily(String(this.font).replace(/^\d+px\s+/, ""));
+          return { width: INSTALLED.indexOf(first) !== -1 ? 100 : 50 };
+        }
+      };
+    } };
+  }
+};
+global.getComputedStyle = function (el) {
+  return { fontFamily: el.style.getPropertyValue("font-family") || el._family };
+};
+global.location = { href: "https://example.com/pricing" };
+
+const crosshair = [];
+const fm = fontsMod.create({
+  ui: {
+    isOurs: function () { return false; },
+    showHighlight: function () {}, hideHighlight: function () {},
+    setCrosshair: function (on) { crosshair.push(on); }
+  },
+  notify: function () {}
+});
+
+const cat = fm.available();
+assert.ok(cat.some(function (f) { return f.name === "Futura" && f.source === "local"; }), "an installed font is offered as local");
+assert.ok(cat.some(function (f) { return f.name === "Playfair Display" && f.source === "web"; }), "a font that is not installed but is curated is offered as web");
+assert.ok(!cat.some(function (f) { return f.name === "Papyrus"; }), "a candidate that is neither installed nor curated is not offered at all");
+
+// One click makes one slot covering every element in that font.
+assert.strictEqual(fm.slotCount(), 0, "no slots before anything is clicked");
+fm.setFont(1, "Futura", "keep");   // no such slot yet — must be a no-op, not a throw
+assert.strictEqual(fm.slotCount(), 0, "setFont on a slot that does not exist is a no-op");
+
+// pick() is internal; drive it the way the page does.
+fm.enable();
+assert.strictEqual(typeof docHandlers.click, "function", "fonts mode attaches its click handler on enable()");
+function click(el, opts) {
+  docHandlers.click(Object.assign({ target: el, shiftKey: false, altKey: false, preventDefault: function () {}, stopPropagation: function () {} }, opts || {}));
+}
+assert.deepStrictEqual(crosshair, [true], "entering fonts mode turns the picking cursor on");
+click(h1);
+assert.strictEqual(fm.slotCount(), 1, "clicking text creates one slot");
+// The complaint this came from: the highlight lasted exactly as long as the
+// cursor stayed on the element, so nothing showed which elements a card owned.
+assert.deepStrictEqual(marked().sort(), ["h1", "h2", "legacy"], "clicking outlines every element in that font, not just the one clicked");
+assert.strictEqual(fm.rows()[0].label, "HeadingFont", "the slot is keyed on the font, not the element");
+assert.strictEqual(fm.rows()[0].detail, "3 elements", "the slot covers every element in that font (h1, h2 and the legacy one)");
+
+click(h2);
+assert.strictEqual(fm.slotCount(), 1, "a second element in the SAME font joins the existing slot rather than making a duplicate");
+
+const slotId = fm.rows()[0].id;
+fm.setFont(slotId, "Futura", "700");
+assert.strictEqual(h1.style.getPropertyValue("font-family"), '"Futura", "HeadingFont"', "the swap keeps the original family as the fallback");
+assert.strictEqual(h1.style.getPropertyPriority("font-family"), "important", "the swap wins against the page's own stylesheet");
+assert.strictEqual(h1.style.getPropertyValue("font-weight"), "700", "an explicit weight is applied");
+assert.strictEqual(p.style.getPropertyValue("font-family"), "", "an element in a different font is untouched");
+
+// THE ownership case. span was already in Futura; the heading slot has just
+// turned h1/h2/legacy into Futura too. A second slot for Futura must claim only
+// span — not the elements the first slot is holding.
+click(span);
+assert.strictEqual(fm.slotCount(), 2, "a font the page already used gets its own slot");
+assert.deepStrictEqual(marked(), ["span"], "focus follows the newest pick, and the previous card's outline goes with it");
+const futuraRow = fm.rows()[1];
+assert.strictEqual(futuraRow.label, "Futura", "the second slot is keyed on Futura");
+assert.strictEqual(futuraRow.detail, "1 element", "the second slot claims only the element it really owns, not the first slot's swapped ones");
+
+fm.setFont(futuraRow.id, "Inter", "keep");
+assert.strictEqual(span.style.getPropertyValue("font-family"), '"Inter", "Futura"', "the second slot swaps its own element");
+assert.strictEqual(h1.style.getPropertyValue("font-family"), '"Futura", "HeadingFont"', "and leaves the first slot's elements exactly where they were");
+assert.strictEqual(h1.style.getPropertyValue("font-weight"), "700", "including their weight");
+
+// Clicking an element the tool has already swapped re-selects its slot rather
+// than creating a third one keyed on the font we ourselves just applied.
+click(h1);
+assert.strictEqual(fm.slotCount(), 2, "clicking an already-swapped element does not spawn a slot for our own swap");
+
+const taken = fm.take();
+assert.strictEqual(taken.url, "https://example.com/pricing", "take() reports where the pairing was seen");
+assert.deepStrictEqual(
+  taken.swaps.map(function (s) { return [s.from, s.to, s.weight, s.count, s.source]; }),
+  [["HeadingFont", "Futura", "700", 3, "local"], ["Futura", "Inter", null, 1, "local"]],
+  "take() reports both halves of the pairing, with the element count that proves each one landed"
+);
+
+// Reset must put the page back EXACTLY — including the inline value its author
+// wrote, priority and all. Clearing it instead would be a silent edit that
+// survives the tool being switched off.
+fm.reset();
+assert.strictEqual(fm.slotCount(), 0, "reset clears every slot");
+assert.strictEqual(h1.style.getPropertyValue("font-family"), "", "an element with no inline font before the swap has none after the reset");
+assert.strictEqual(h1.style.getPropertyValue("font-weight"), "", "the weight goes back too");
+assert.strictEqual(legacy.style.getPropertyValue("font-family"), '"HeadingFont", serif', "an element that HAD an inline font gets its own value back, not an empty string");
+assert.strictEqual(legacy.style.getPropertyPriority("font-family"), "important", "and gets its !important back with it");
+assert.deepStrictEqual(fm.take().swaps, [], "nothing is reported as swapped after a reset");
+fm.disable();
+assert.strictEqual(docHandlers.click, undefined, "leaving the mode detaches the click handler — the page has to be usable again");
+assert.strictEqual(crosshair[crosshair.length - 1], false, "leaving the mode puts the cursor back");
+assert.deepStrictEqual(marked(), [], "leaving the mode clears the outline — the swaps stay, the picking aid does not");
+
+// Put the globals back: nothing after this point should see a fake DOM.
+delete global.document; delete global.getComputedStyle; delete global.location;
+
+// ---- the font picker -------------------------------------------------------
+
+const fp = require(MOD("fontpicker.js"));
+assert.strictEqual(typeof fp.create, "function", "fontpicker exports create");
+
+// THE reason this control exists instead of a <datalist>: every row is set in
+// the font it names. A native picker renders all 82 options in the browser's UI
+// font, which is the one typeface you are guaranteed not to be choosing.
+assert.ok(/fontFamily: '"' \+ f\.name \+ '"/.test(fpSrc),
+  "each picker row is rendered IN the font it names — the whole point of not using a datalist");
+// Checked against CODE, not prose — both files explain in comments why the
+// datalist was dropped, and a grep over raw source fails on the explanation for
+// the very rule it enforces.
+const stripComments = function (s) { return s.split("\n").filter(function (l) { return l.trim().indexOf("//") !== 0; }).join("\n"); };
+assert.ok(!/datalist/.test(stripComments(fpSrc) + stripComments(uiSrc)),
+  "the native datalist is gone from both chrome files");
+
+// Forty stylesheets fetched to fill a list nobody scrolled is the cost this
+// avoids; on a CSP-blocked site it is also forty failed requests.
+assert.ok(/IntersectionObserver/.test(fpSrc), "web-font previews load lazily as their rows scroll into view");
+assert.ok(/asked\[name\]/.test(fpSrc), "a preview is requested at most once per font");
+// Loading belongs to the mode, not the chrome: fontpicker must not know Google exists.
+assert.ok(!/googleapis/.test(fpSrc), "fontpicker.js does not know where a web font comes from — it only reports which one came into view");
+
+// rank(): typing "in" must put Inter above the fonts that merely contain "in"
+// somewhere. Alphabetical order buries the exact thing you typed, which is the
+// difference between a search box and a scroll bar.
+// Zapfino carries "in" at index 5, both others at index 0 — so this set really
+// does separate a prefix hit from a buried one.
+const RANK_ITEMS = [{ name: "Zapfino" }, { name: "Instrument Serif" }, { name: "Inter" }, { name: "Karla" }];
+assert.deepStrictEqual(fp.rank(RANK_ITEMS, "in").map(function (f) { return f.name; }),
+  ["Instrument Serif", "Inter", "Zapfino"],
+  "a prefix match outranks a match buried in the middle of the name");
+assert.deepStrictEqual(fp.rank(RANK_ITEMS, "").map(function (f) { return f.name; }),
+  ["Zapfino", "Instrument Serif", "Inter", "Karla"],
+  "an empty query keeps the incoming order rather than re-sorting it");
+assert.deepStrictEqual(fp.rank(RANK_ITEMS, "  KAR "), [{ name: "Karla" }], "search is trimmed and case-insensitive");
+assert.deepStrictEqual(fp.rank(RANK_ITEMS, "zzz"), [], "no match is an empty list, not the whole list");
+assert.deepStrictEqual(fp.rank([], "in"), [], "an empty catalogue does not throw");
+
+// The picker opens UPWARD, above the WHOLE toolbar — not merely above its own
+// trigger. The trigger sits in the toolbar's second row, so "above the trigger"
+// puts the popover across the mode tabs and the other cards, hiding the very
+// controls it was opened from. Study's readout shipped that bug once already.
+assert.ok(/function floorY\(\)/.test(fpSrc), "the picker computes a floor rather than anchoring to the trigger alone");
+
+// Inline styles cannot express :focus-visible, so every control in this overlay
+// was invisible to a keyboard until the stylesheet gained one rule. Scoped under
+// .__ann-ui: the host page's own focus styling is never touched.
+assert.ok(/focus-visible/.test(uiSrc), "the overlay draws a visible keyboard focus ring");
+assert.ok(/\.__ann-ui button:focus-visible/.test(uiSrc), "the focus ring is scoped to our own chrome");
+assert.ok(!/outline: "none"/.test(fpSrc), "the picker's search field does not strip its focus ring");
+assert.ok(/state\.reserve/.test(fpSrc), "the floor takes a reserved node (the toolbar) into account");
+assert.ok(/reserve: bar/.test(uiSrc), "ui.js reserves the whole bar, not just the button that opened the picker");
+assert.ok(/list\.style\.maxHeight[\s\S]{0,200}?var h = pop\.offsetHeight/.test(fpSrc),
+  "maxHeight is clamped BEFORE offsetHeight is read — measuring first gives the unclamped height and the popover lands too high");
+
 
 Promise.all([
   favPromise.then(function (v) {

@@ -1,6 +1,6 @@
 ---
 name: annotate
-description: Point-and-comment on the live local app, plus a read-only Study mode that reverse-engineers any site's design system. Invoked as /annotate [url]. Opens the Playwright browser, injects an inspect-element-style overlay so Matt can hover, click, and leave comments (each auto-screenshotted), then watches for those comments and fixes them. Study mode (the 4th toolbar tab) works against any URL, not just the local app, and never modifies the page it inspects. Studied elements can be favourited to a design-studies/ library and promoted, through a reconcile step, into the user's own design language. Dev tool only — never shipped, exempt from mobile-parity.
+description: Point-and-comment on the live local app, plus a read-only Study mode that reverse-engineers any site's design system. Invoked as /annotate [url]. Opens the Playwright browser, injects an inspect-element-style overlay so Matt can hover, click, and leave comments (each auto-screenshotted), then watches for those comments and fixes them. Study mode (the 4th toolbar tab) works against any URL, not just the local app, and never modifies the page it inspects. Studied elements can be favourited to a design-studies/ library and promoted, through a reconcile step, into the user's own design language. Fonts mode (the 5th tab) swaps fonts live on the page so font pairings can be previewed on the real product. Dev tool only — never shipped, exempt from mobile-parity.
 ---
 
 # /annotate — point-and-comment on the live app
@@ -21,12 +21,18 @@ your context and nothing is fetched over the network.
 3. **Boot the overlay** — one call, no server, no pasted source:
    ```
    browser_run_code_unsafe({ code: `async (page) => {
-     const FILES = ["core.js","palette.js","ui.js","point.js","measure.js","study-motion.js","study.js","index.js"];
+     const FILES = ["core.js","palette.js","fontpicker.js","ui.js","point.js","measure.js","study-motion.js","study.js","fonts.js","index.js"];
      for (const f of FILES) await page.context().addInitScript({ path: "<this skill's directory>/overlay/" + f });
+     try { await page.context().grantPermissions(["local-fonts"]); } catch (e) {}
      await page.reload({ waitUntil: "domcontentloaded" });
      return await page.evaluate(() => { window.__annotatorMods.index.setup(); return "ready"; });
    }` })
    ```
+   **`grantPermissions(["local-fonts"])` is what makes Fonts mode see the machine's real font
+   library** — 449 families here rather than the 43 a measurement probe can find. It is wrapped
+   in a try/catch because it is not worth failing the boot over: without it Fonts falls back to
+   a curated list and says so in the picker. Everything else works either way.
+
    `addInitScript` takes a **path**, so Playwright reads the files in its own process and
    injects them over CDP before the document's own scripts — the same mechanism as
    `browser_evaluate`, which Chromium does not subject to page CSP. Verified booting on
@@ -52,10 +58,10 @@ your context and nothing is fetched over the network.
    exactly what the retired server existed to avoid. Say you are doing it and why.
 4. *(nothing — the boot above is a single step)*
 5. **Tell Matt**, briefly: a toolbar sits **bottom-centre**, and it **starts with no mode
-   selected** (browse freely). Top row never changes — **Point · Measure · Compare · Study**,
+   selected** (browse freely). Top row never changes — **Point · Measure · Compare · Study · Fonts**,
    then **Queue**; the second row shows whatever the selected mode needs and collapses when
    nothing is selected. **Click the mode you want** (no cycling), or press **Alt+A** to
-   rotate `off → Point → Measure → Study → off`. **Clicking the mode you are already in
+   rotate through the modes and back to `off`. **Clicking the mode you are already in
    leaves it**, which is how you get back to using the page.
    - **Point** — hover highlights the element **and shows an inspector card** (computed
      font/size/color/padding/etc.), click opens a comment box, **⌘/Ctrl+Enter** or **Save**
@@ -68,6 +74,8 @@ your context and nothing is fetched over the network.
      again, see what moved. See the Compare section below.
    - **Study** — reverse-engineers styles/design-system/motion, read-only, works on any
      site. Row 2 holds the note/tags/★ Save favourite inputs.
+   - **Fonts** — click text, retype its font, see the pairing on the real page. This is the
+     one mode that **writes to the page** (inline styles only, fully revertible). See below.
 
    **Queue** opens a panel of saved comments on demand and carries the running count;
    clicking a row scrolls that annotation into view. Say **"done"** to stop.
@@ -228,8 +236,9 @@ if you need a real answer for that element.
   mechanism as `browser_evaluate`, which Chromium does not subject to page CSP.
   ```
   browser_run_code_unsafe({ code: `async (page) => {
-    const FILES = ["core.js","palette.js","ui.js","point.js","measure.js","study-motion.js","study.js","index.js"];
+    const FILES = ["core.js","palette.js","fontpicker.js","ui.js","point.js","measure.js","study-motion.js","study.js","fonts.js","index.js"];
     for (const f of FILES) await page.context().addInitScript({ path: "<this skill's directory>/overlay/" + f });
+    try { await page.context().grantPermissions(["local-fonts"]); } catch (e) {}
     await page.reload({ waitUntil: "domcontentloaded" });
     return await page.evaluate(() => { window.__annotatorMods.index.setup(); return "ready"; });
   }` })
@@ -432,6 +441,83 @@ typed by accident.
 Tailwind config that mirrors the doc), **say so before you write**, and change them in the
 same commit. Promoting a token and leaving its test red hands him a broken suite for a
 change he approved.
+
+## Fonts mode
+
+**Preview a font pairing on the real page, not on a specimen sheet.** Click a heading, click
+a paragraph, retype both, and look at the actual product with the actual copy at the actual
+sizes — which is the only place a pairing can honestly be judged.
+
+**This is the one mode that writes to the page it is pointed at.** Study's read-only promise
+is Study's, not the overlay's. Fonts writes **inline `font-family`/`font-weight` only**, on
+elements it matched, remembering each element's exact previous inline value — **Reset** puts
+every one of them back, and a page reload clears them too. It never touches anything else,
+and it skips our own chrome (`.__ann-ui`) so the toolbar cannot restyle itself.
+
+**Driving it:**
+1. Click **Fonts** in the toolbar.
+2. **Click any text on the page.** The cursor is a crosshair while Fonts is picking. The
+   overlay reads that element's computed `font-family`, takes the first real family name, and
+   adds a **card** for it — one card per font, showing how many elements on the page are in
+   it. **Every element in that card's group stays outlined** so the count is something you can
+   see rather than take on trust; the outline follows the newest pick and clears when you
+   leave the mode. **Alt+click** to pick a link or button without the
+   page navigating away (same convention as Study; plain click stops nothing, Shift skips).
+3. **Press the card's font button** to open the picker. Every row in it is **set in the font
+   it names** — that is the whole reason it is not a native dropdown, which would render all
+   82 options in the browser's UI font. Type to search (a prefix match ranks above a match
+   buried mid-name), filter by **All / On this Mac / Google**, ↑↓ and Enter work, Esc closes.
+   Rows tagged `web` are fetched from Google the moment they scroll into view, one family at
+   a time. The weight dropdown beside the button is `keep` by default, and **↺ puts the
+   page's own font back** without removing the card.
+4. **Two cards is a pairing.** That is the shape to aim for: one for the headings, one for
+   the body, judged together on the real page.
+5. **Swaps stay applied when you leave the mode**, deliberately — judging a pairing means
+   scrolling and clicking through the app with the new fonts on, which is impossible from
+   inside a mode that owns every click. **Reset** clears them.
+
+**From the agent side** — synchronous, nothing is sampled:
+```
+() => window.__annotatorFontsTake()
+```
+```
+{ url, fontsAvailable, swaps: [{ from, to, weight, count, source, truncated }] }
+```
+`from` is the family that was on the page, `to` the one Matt chose, `weight` is `null` when
+he left it on `keep`, and `source` is `"local"` or `"web"`. **`count` is the load-bearing
+field**: a swap that matched nothing and a swap that restyled 300 elements are
+indistinguishable without it, and only the second one is a decision. Feed the result into the
+promote step (Typography) exactly like a favourite — a pairing he liked on screen is
+inspiration, not yet a decision.
+
+**Where the fonts come from.** Installed fonts are enumerated with **`queryLocalFonts()`**,
+which needs the `local-fonts` permission — granted outright by the boot snippet, so there is
+no prompt. That is the difference between seeing your whole library and seeing a guess: 449
+families against 43 on this machine, measured 2026-08-20. If the grant is missing or the
+browser refuses, Fonts falls back to **canvas width-measurement** over a fixed candidate list
+and the picker says so at its foot rather than passing off a handful as everything.
+`__annotatorFontsTake()` reports which path ran, as `fontsFrom: "system" | "probed"`.
+
+The web list is ~40 curated pairing families, hard-coded: the Google Fonts *catalogue* API
+needs a key, and a key in a dev tool is a key in a git repo. A web family you already own is
+offered as `local`, so it needs no network at all.
+
+**Honest limits — report these, don't paper over them:**
+- **A site that blocks Google Fonts blocks the web half.** On `github.com` (`default-src
+  'none'`) the stylesheet is refused; the row says so in its own line rather than silently
+  doing nothing, and **installed fonts still work there**. A blocked stylesheet does not throw
+  — `document.fonts.load()` resolves with an empty face list, which is what that check reads.
+- **A re-render undoes the swap for the elements it replaced.** Inline styles live on the
+  nodes; React handing back fresh nodes hands back the original font. Re-pick the row to
+  re-apply. A `MutationObserver` would fix it and is not worth it for a preview tool.
+- **Grouping is by computed font, so a page set in one font everywhere gives one card.** That
+  is the honest answer — there is no second font to pair against yet.
+- **Only on the fallback path is the list incomplete.** With `local-fonts` granted the picker
+  shows every installed family. Without it, it shows what the probe list happens to name — and
+  it says so at the foot of the picker, so "my font is missing" always has an answer.
+- **The sweep caps at 8000 matched elements**; `truncated: true` says so, and a `+` appears
+  after the count in the row. Never present a truncated swap as the whole page.
+- **Shadow DOM isn't walked**, same as Study.
 
 ## Compare mode
 

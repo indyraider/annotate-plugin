@@ -3,11 +3,13 @@
 // annotation state — index.js decides when to call what.
 ;(function (root, factory) {
   var palette = (typeof module !== "undefined" && module.exports) ? require("./palette.js") : (root.__annotatorMods && root.__annotatorMods.palette);
-  var api = factory(palette);
+  var fontpicker = (typeof module !== "undefined" && module.exports) ? require("./fontpicker.js") : (root.__annotatorMods && root.__annotatorMods.fontpicker);
+  var api = factory(palette, fontpicker);
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else { root.__annotatorMods = root.__annotatorMods || {}; root.__annotatorMods.ui = api; }
-})(typeof self !== "undefined" ? self : this, function (palette) {
+})(typeof self !== "undefined" ? self : this, function (palette, fontpicker) {
   if (!palette) throw new Error("annotate: ui.js requires palette.js to load first");
+  if (!fontpicker) throw new Error("annotate: ui.js requires fontpicker.js to load first");
   var SANS = palette.SANS;
   var MONO = palette.MONO;
 
@@ -18,12 +20,31 @@
 
     // Crosshair cursor over the whole app while ON (our own UI keeps its normal cursors).
     var cursorStyle = document.createElement("style"); cursorStyle.className = "__ann-ui";
-    cursorStyle.textContent = "html.__ann-cross, html.__ann-cross :not(.__ann-ui):not(.__ann-ui *){cursor:crosshair !important}";
+    cursorStyle.textContent = "html.__ann-cross, html.__ann-cross :not(.__ann-ui):not(.__ann-ui *){cursor:crosshair !important}"
+      // The picked group, outlined where it stands. A single absolutely-placed
+      // box can only ever show ONE element and drifts the moment the page
+      // scrolls; an attribute plus a rule marks every element in the group,
+      // follows them through scroll and reflow for free, and comes off by
+      // removing the attribute.
+      + "[data-ann-font-pick]{outline:2px solid " + pal.accent + " !important;outline-offset:1px}"
+      // Keyboard focus, for the whole overlay rather than for one panel. Every
+      // control here is built with inline styles, which cannot express
+      // :focus-visible at all — so until now nothing in this tool showed where
+      // the keyboard was. Scoped under .__ann-ui so the host page's own focus
+      // styling is never touched.
+      + ".__ann-ui button:focus-visible,.__ann-ui input:focus-visible,.__ann-ui select:focus-visible,.__ann-ui textarea:focus-visible"
+      + "{outline:2px solid " + pal.accent + ";outline-offset:1px;border-radius:6px}";
     document.head.appendChild(cursorStyle);
 
     var hl = document.createElement("div"); hl.className = "__ann-ui";
     Object.assign(hl.style, { position: "fixed", zIndex: Z - 1, pointerEvents: "none", border: "1.5px solid " + pal.accent, background: pal.accentSoft, display: "none", borderRadius: "5px" });
     document.body.appendChild(hl);
+    // One owner for the crosshair. It used to be two lines inside point.js, so
+    // every later mode that wanted it either duplicated them or, as Fonts did,
+    // silently shipped without a picking cursor at all.
+    function setCrosshair(on) {
+      document.documentElement.classList[on ? "add" : "remove"]("__ann-cross");
+    }
     function showHighlight(el) { var r = el.getBoundingClientRect(); Object.assign(hl.style, { display: "block", left: r.left + "px", top: r.top + "px", width: r.width + "px", height: r.height + "px" }); }
     function hideHighlight() { hl.style.display = "none"; }
 
@@ -177,6 +198,21 @@
       }
       var act = actions[hit.getAttribute("data-ann-act")];
       if (act) act(hit);
+    }, true);
+
+    // Same delegated-capture reasoning as the click listener above, for the
+    // controls a click never fires on: a <select> reports through `change`, so
+    // the fonts weight control, wired only into `actions`, would look dead on
+    // exactly the sites that eat propagation.
+    var changeActions = {};
+    function onChange(name, fn) { changeActions[name] = fn; }
+    document.addEventListener("change", function (e) {
+      var t = e.target;
+      if (!t || !t.closest) return;
+      var hit = t.closest("[data-ann-change]");
+      if (!hit || !isOurs(hit)) return;
+      var fn = changeActions[hit.getAttribute("data-ann-change")];
+      if (fn) fn(hit);
     }, true);
 
     onAct("help", function () { guide.style.display = guide.style.display === "none" ? "block" : "none"; });
@@ -349,6 +385,185 @@
       cmpRows.style.display = "flex";
     }
 
+    // ---- fonts panel: one card per font the page uses ----
+    //
+    // Two lines per card, and the split is the point. The top line is a FACT
+    // about the page (this font, this many elements). The bottom line is the
+    // CONTROL (try this instead, at this weight). The first version crammed both
+    // into one row with a bare datalist, and it read as a form rather than as a
+    // typographic tool — the one thing on screen that had to show a typeface was
+    // rendering every option in the browser's UI font.
+    //
+    // This file still does not know what a "font slot" means. Rows arrive as
+    // plain {id, label, detail, value, weight, weights, status}, and choosing one
+    // calls back with three primitives.
+    var picker = fontpicker.create(pal);
+    var fontsPanel = document.createElement("div"); fontsPanel.className = "__ann-ui";
+    Object.assign(fontsPanel.style, { display: "flex", flexDirection: "column", gap: "9px", width: "418px", font: "12px " + SANS });
+    var fontsHead = document.createElement("div");
+    Object.assign(fontsHead.style, { display: "flex", alignItems: "center", gap: "10px" });
+    var fontsStatus = document.createElement("div");
+    Object.assign(fontsStatus.style, { color: pal.text3, font: "11px/1.45 " + SANS, flex: "1", minWidth: "0" });
+    var fontsReset = document.createElement("button"); fontsReset.textContent = "Reset";
+    fontsReset.setAttribute("data-ann-act", "fonts-reset");
+    fontsReset.title = "Put every swapped element back to the font the page gave it";
+    Object.assign(fontsReset.style, { padding: "5px 11px", borderRadius: "7px", border: "1px solid " + pal.border, background: "transparent", color: pal.text2, font: "600 11px " + SANS, cursor: "pointer", flex: "none" });
+    fontsHead.append(fontsStatus, fontsReset);
+    var fontsRows = document.createElement("div");
+    Object.assign(fontsRows.style, { display: "flex", flexDirection: "column", gap: "7px", maxHeight: "244px", overflowY: "auto" });
+    fontsPanel.append(fontsHead, fontsRows);
+
+    function setFontsStatus(text) { fontsStatus.textContent = text || ""; }
+
+    // The catalogue and the preview loader belong to whoever owns fonts, not to
+    // this file — it is handed them and passes them straight to the picker.
+    var fontCatalogue = [], fontPreviewLoader = null, fontCatalogueNote = "";
+    function setFontOptions(items, onNeedPreview, note) {
+      fontCatalogue = items || [];
+      fontPreviewLoader = onNeedPreview || null;
+      fontCatalogueNote = note || "";
+      picker.setNote(fontCatalogueNote);
+      picker.refresh();
+    }
+
+    var fontSlotChange = null, fontSlotRemove = null;
+    function onFontSlotChange(fn) { fontSlotChange = fn; }
+    function onFontSlotRemove(fn) { fontSlotRemove = fn; }
+    function rowState(id) {
+      var row = fontsRows.querySelector('[data-ann-slot-row="' + id + '"]');
+      if (!row) return null;
+      var wt = row.querySelector("[data-ann-change='font-weight']");
+      return { row: row, family: row.getAttribute("data-ann-family") || "", weight: wt ? wt.value : "keep" };
+    }
+    function report(id, family, weight) { if (fontSlotChange) fontSlotChange(Number(id), family, weight); }
+
+    onAct("font-open", function (hit) {
+      var id = hit.getAttribute("data-ann-slot");
+      var st = rowState(id);
+      if (!st) return;
+      picker.open(hit, {
+        items: fontCatalogue,
+        note: fontCatalogueNote,
+        // The whole bar, not just this button — see fontpicker's floorY().
+        reserve: bar,
+        value: st.family,
+        onNeedPreview: fontPreviewLoader,
+        onPick: function (name) {
+          var now = rowState(id);
+          report(id, name, now ? now.weight : "keep");
+        }
+      });
+    });
+    // Clearing a card is not the same as removing it: you are still working on
+    // that font, you just want the page's own back while you look.
+    onAct("font-clear", function (hit) {
+      var id = hit.getAttribute("data-ann-slot");
+      var st = rowState(id);
+      report(id, "", st ? st.weight : "keep");
+    });
+    onChange("font-weight", function (hit) {
+      var id = hit.closest("[data-ann-slot-row]").getAttribute("data-ann-slot-row");
+      var st = rowState(id);
+      report(id, st ? st.family : "", hit.value);
+    });
+    onAct("fonts-remove", function (hit) {
+      if (fontSlotRemove) fontSlotRemove(Number(hit.getAttribute("data-ann-slot")));
+    });
+
+    function setFontSlots(rows) {
+      fontsRows.textContent = "";
+      if (!rows || !rows.length) { fontsRows.style.display = "none"; return; }
+      fontsRows.style.display = "flex";
+      rows.forEach(function (r) {
+        var card = document.createElement("div");
+        card.setAttribute("data-ann-slot-row", r.id);
+        card.setAttribute("data-ann-family", r.value || "");
+        Object.assign(card.style, { display: "flex", flexDirection: "column", gap: "6px", background: pal.surface2, border: "1px solid " + pal.hairline, borderRadius: "9px", padding: "8px 9px" });
+
+        // Line 1 — what the page has. Read-only fact, so it is set in the data
+        // font the rest of this tool uses for measured values.
+        var fact = document.createElement("div");
+        Object.assign(fact.style, { display: "flex", alignItems: "baseline", gap: "8px" });
+        var from = document.createElement("span");
+        from.textContent = r.label;
+        from.title = r.label;
+        Object.assign(from.style, { flex: "1", minWidth: "0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: pal.text2, font: "600 11px " + MONO });
+        var count = document.createElement("span");
+        count.textContent = r.detail;
+        Object.assign(count.style, { flex: "none", color: pal.text3, font: "10px " + MONO, marginRight: "2px" });
+        var kill = document.createElement("button"); kill.textContent = "✕";
+        kill.setAttribute("aria-label", "Remove this font");
+        kill.setAttribute("data-ann-act", "fonts-remove");
+        kill.setAttribute("data-ann-slot", r.id);
+        Object.assign(kill.style, { flex: "none", width: "17px", height: "17px", padding: "0", borderRadius: "5px", border: "0", background: "transparent", color: pal.text3, font: "10px " + SANS, cursor: "pointer", lineHeight: "1" });
+        fact.append(from, count, kill);
+
+        // Line 2 — what you are trying. The trigger renders the chosen family in
+        // that family, so the control shows its own answer.
+        var controls = document.createElement("div");
+        Object.assign(controls.style, { display: "flex", alignItems: "stretch", gap: "6px" });
+
+        var trigger = document.createElement("button");
+        trigger.setAttribute("data-ann-act", "font-open");
+        trigger.setAttribute("data-ann-slot", r.id);
+        Object.assign(trigger.style, { flex: "1", minWidth: "0", display: "flex", alignItems: "center", gap: "7px", padding: "6px 9px", borderRadius: "7px", border: "1px solid " + pal.border, background: pal.elevated, cursor: "pointer", textAlign: "left" });
+        var triggerText = document.createElement("span");
+        triggerText.textContent = r.value || "Choose a font";
+        Object.assign(triggerText.style, {
+          flex: "1", minWidth: "0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          color: r.value ? pal.text : pal.text3,
+          fontFamily: r.value ? '"' + r.value + '", ' + SANS : SANS,
+          fontSize: r.value ? "14px" : "12px"
+        });
+        trigger.append(triggerText, picker.chevron(6));
+
+        var weightWrap = document.createElement("div");
+        Object.assign(weightWrap.style, { position: "relative", display: "flex", flex: "none" });
+        var weight = document.createElement("select");
+        weight.setAttribute("data-ann-change", "font-weight");
+        weight.setAttribute("aria-label", "Weight");
+        (r.weights || []).forEach(function (w) {
+          var o = document.createElement("option"); o.value = w; o.textContent = w;
+          if (w === r.weight) o.selected = true;
+          weight.appendChild(o);
+        });
+        // appearance:none strips the OS control that made this look pasted in
+        // from another application; the chevron beside it is ours.
+        Object.assign(weight.style, {
+          appearance: "none", WebkitAppearance: "none",
+          font: "600 11px " + MONO, padding: "6px 20px 6px 9px", borderRadius: "7px",
+          border: "1px solid " + pal.border, background: pal.elevated, color: pal.text2, cursor: "pointer"
+        });
+        var wChev = picker.chevron(5);
+        Object.assign(wChev.style, { position: "absolute", right: "8px", top: "50%", marginTop: "-4px" });
+        weightWrap.append(weight, wChev);
+
+        controls.append(trigger, weightWrap);
+        if (r.value) {
+          var clear = document.createElement("button");
+          clear.textContent = "↺";
+          clear.setAttribute("aria-label", "Put this font back");
+          clear.setAttribute("data-ann-act", "font-clear");
+          clear.setAttribute("data-ann-slot", r.id);
+          clear.title = "Put this font back";
+          Object.assign(clear.style, { flex: "none", width: "28px", borderRadius: "7px", border: "1px solid " + pal.border, background: "transparent", color: pal.text3, font: "12px " + SANS, cursor: "pointer" });
+          controls.appendChild(clear);
+        }
+
+        card.append(fact, controls);
+        fontsRows.appendChild(card);
+
+        // A per-card message (a font that could not load here) sits under its own
+        // card — one shared status line would blame whichever card was touched last.
+        if (r.status) {
+          var msg = document.createElement("div");
+          msg.textContent = r.status;
+          Object.assign(msg.style, { color: pal.accent, font: "11px/1.4 " + SANS, padding: "2px 2px 0" });
+          card.appendChild(msg);
+        }
+      });
+    }
+
     // A plain line of text for a mode whose row 2 is just a status ("Passes
     // through (recording) · 41 entries"). Saves index.js hand-building a node.
     function toolsText(text) {
@@ -361,6 +576,7 @@
     return {
       showHighlight: showHighlight,
       hideHighlight: hideHighlight,
+      setCrosshair: setCrosshair,
       showInspector: showInspector,
       hideInspector: hideInspector,
       bar: bar,
@@ -374,6 +590,15 @@
       favPanel: favPanel,
       setFavouriteStatus: setFavouriteStatus,
       clearFavouriteInputs: function () { favNote.value = ""; favTags.value = ""; },
+      fontsPanel: fontsPanel,
+      setFontOptions: setFontOptions,
+      setFontSlots: setFontSlots,
+      setFontsStatus: setFontsStatus,
+      refreshFontPicker: picker.refresh,
+      closeFontPicker: picker.close,
+      onFontSlotChange: onFontSlotChange,
+      onFontSlotRemove: onFontSlotRemove,
+      onChange: onChange,
       comparePanel: comparePanel,
       setCompareStatus: setCompareStatus,
       setCompareRows: setCompareRows,
