@@ -118,15 +118,57 @@
   }
 
   var catalogue = null, catalogueSource = "probed", enumState = "idle";
+  // What the browser will actually let us read, kept as a diagnosis rather than
+  // a boolean. Reported live 2026-08-20: the picker showed the curated 82 and
+  // said only "this browser would not read your installed fonts", which names
+  // neither the cause nor anything to do about it — and the four causes below
+  // need four different answers.
+  var permissionState = "unknown";
+  // Resolved on EVERY use, not captured at load. A bare `window` mention is a
+  // ReferenceError in Node (where the self-check runs this), so it has to be
+  // guarded — but capturing it once at load time bound the answer to whenever
+  // this module happened to be first required, which the self-check does through
+  // index.js long before it sets up a window. That produced the worst possible
+  // failure: loadSystemFonts took its "no window" branch and returned WITHOUT
+  // calling back, so the caller's promise never settled, Node exited 0 with no
+  // output, and the test silently did not run. Lazy costs a property lookup and
+  // owes nothing to load order.
+  function W() { return (typeof window !== "undefined") ? window : null; }
+  function accessState() {
+    if (!W()) return "unsupported";
+    if (typeof W().queryLocalFonts !== "function") {
+      // The API is hidden outright on a page that is not a secure context, which
+      // is the single most likely reason for a real app on a plain-http origin.
+      return W().isSecureContext === false ? "insecure" : "unsupported";
+    }
+    return permissionState;
+  }
+  function refreshPermission(onDone) {
+    var done = function (state) { permissionState = state; if (onDone) onDone(); };
+    if (!W() || !W().navigator || !W().navigator.permissions || !W().navigator.permissions.query) return done("unknown");
+    try {
+      W().navigator.permissions.query({ name: "local-fonts" })
+        .then(function (st) { done(st.state); })["catch"](function () { done("unknown"); });
+    } catch (e) { done("unknown"); }
+  }
   // Synchronous: whatever is known right now. Never waits — the picker has to
   // open instantly, and it upgrades itself in place when the real list lands.
   function available() {
     if (!catalogue) catalogue = buildCatalogue(probedLocalNames());
     return catalogue;
   }
+  // The note the picker shows at its foot when the list is short. `ask` marks
+  // the cases a click can still fix — which is the whole point: the permission
+  // can be granted from inside the page, by the person looking at the browser
+  // window, and until now the only way to get it was a Playwright call in the
+  // boot snippet that this tool could neither verify nor perform.
   function catalogueNote() {
-    return catalogueSource === "system" ? "" :
-      "Showing a curated list — this browser would not read your installed fonts.";
+    if (catalogueSource === "system") return null;
+    var s = accessState();
+    if (s === "insecure") return { text: "This page is plain http, so the browser hides your installed fonts. Works on https or localhost.", ask: false };
+    if (s === "unsupported") return { text: "This browser can't list installed fonts, so this is the curated set.", ask: false };
+    if (s === "denied") return { text: "Font access is blocked for this site. Allow it in the browser's site settings, then press Retry.", ask: true, label: "Retry" };
+    return { text: "Showing a curated set. Your own fonts need the browser's permission.", ask: true, label: "Use my installed fonts" };
   }
 
   // The real answer, once per page. queryLocalFonts() needs the `local-fonts`
@@ -138,14 +180,26 @@
   // permission rejects, an older browser has no such function, and a prompt
   // nobody answers never settles at all — which is what the ceiling is for.
   var ENUM_CEILING_MS = 4000;
+  // MUST stay synchronous from its caller down to queryLocalFonts() when it is
+  // reached from a click: Chrome only shows the permission prompt while the user
+  // activation from that click is still live, and a single `await` before the
+  // call spends it. That is why the permission state is not consulted here.
   function loadSystemFonts(onDone) {
-    if (enumState !== "idle") return;
-    if (typeof window.queryLocalFonts !== "function") { enumState = "done"; return; }
+    // Both early exits MUST still call back. A caller that wraps this in a
+    // promise waits for ever otherwise, and "waits for ever" in Node is a silent
+    // exit with status 0 — a test that does not run and does not say so.
+    if (enumState !== "idle") { if (onDone) onDone(); return; }
+    if (!W() || typeof W().queryLocalFonts !== "function") {
+      enumState = "done";
+      if (onDone) onDone();
+      return;
+    }
     enumState = "running";
     var settled = false;
     var finish = function (names) {
       if (settled) return;
       settled = true;
+      clearTimeout(ceiling);
       enumState = "done";
       if (names && names.length) {
         catalogue = buildCatalogue(names);
@@ -153,9 +207,9 @@
       }
       if (onDone) onDone();
     };
-    setTimeout(function () { finish(null); }, ENUM_CEILING_MS);
+    var ceiling = setTimeout(function () { finish(null); }, ENUM_CEILING_MS);
     try {
-      window.queryLocalFonts().then(function (faces) {
+      W().queryLocalFonts().then(function (faces) {
         var names = [], seen = {};
         for (var i = 0; i < faces.length; i++) {
           var n = faces[i] && faces[i].family;
@@ -592,6 +646,12 @@
         // Which path produced the list, so a report can say "449 fonts on this
         // Mac" or admit it only probed for 43 — those are different answers.
         fontsFrom: catalogueSource,
+        // And WHY, when it is the short list. "insecure" (plain-http page),
+        // "unsupported" (browser has no such API), "denied", "prompt" — four
+        // causes that look identical on screen and need four different answers.
+        // Carried here so a session that cannot see the picker can still say
+        // what is wrong.
+        fontAccess: accessState(),
         swaps: slots.filter(isActive).map(function (s) {
           var css = declarationsFor(s, baseline(s).sizePx);
           return {
@@ -625,6 +685,10 @@
       setFont: setFont, setStyle: setStyle, clearStyles: clearStyles,
       removeSlot: removeSlot, reset: reset, take: take,
       preloadPreview: preloadPreview, loadSystemFonts: loadSystemFonts, catalogueNote: catalogueNote,
+      accessState: accessState, refreshPermission: refreshPermission,
+      // The gesture path. Re-arms the one-shot guard and goes straight at
+      // queryLocalFonts, so a prompt actually appears for Matt to answer.
+      requestSystemFonts: function (onDone) { enumState = "idle"; loadSystemFonts(function () { refreshPermission(onDone); }); },
       slotCount: function () { return slots.length; }
     };
   }

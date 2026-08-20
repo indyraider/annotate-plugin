@@ -1357,6 +1357,17 @@ assert.strictEqual(core.firstFamily(undefined), "", "undefined is not a font");
 // ---- Fonts mode -----------------------------------------------------------
 
 const fontsSrc = fs.readFileSync(MOD("fonts.js"), "utf8");
+
+// `window` must exist BEFORE fonts.js is required: the module resolves its
+// window reference once at load time (it has to — a bare `window` mention is a
+// ReferenceError in Node, which is where this suite runs it). Assigning it after
+// the require would leave the module holding null and every browser path would
+// short-circuit, passing for the wrong reason.
+const winStub = {
+  isSecureContext: true,
+  navigator: { permissions: { query: function () { return Promise.resolve({ state: winStub.__perm || "prompt" }); } } }
+};
+global.window = winStub;
 const fontsMod = require(MOD("fonts.js"));
 assert.strictEqual(typeof fontsMod.create, "function", "fonts exports create");
 assert.ok(fontsMod.WEB_FONTS.length > 20, "the curated web list is actually a list");
@@ -1407,6 +1418,34 @@ assert.ok(/probedLocalNames/.test(fontsCode), "the measurement probe survives as
 assert.ok(/ENUM_CEILING_MS/.test(fontsCode), "enumeration has a ceiling — an unanswered permission prompt never settles at all");
 assert.ok(/catalogueNote/.test(fontsCode), "a fallback catalogue announces itself rather than looking like the whole list");
 assert.ok(/setNote/.test(fpSrc), "the picker has somewhere to show that note");
+
+// ---- the short list has to say WHY, and offer the fix ----------------------
+//
+// Reported live 2026-08-20: the picker showed the curated 82 with the single
+// line "this browser would not read your installed fonts", which names neither
+// the cause nor a remedy. Four different things produce that same short list and
+// they need four different answers — and until now the permission could only be
+// obtained OUT OF BAND, from a grantPermissions call in the boot snippet, so a
+// session that booted without it had no way back at all.
+assert.ok(/isSecureContext/.test(fontsCode), "an http page hides the API outright — that is a different problem from a refused permission, and says so");
+assert.ok(/navigator\.permissions/.test(fontsCode), "the real permission state is read, not guessed");
+["insecure", "unsupported", "denied"].forEach(function (cause) {
+  assert.ok(new RegExp('"' + cause + '"').test(fontsCode), "the diagnosis distinguishes the '" + cause + "' case");
+});
+assert.ok(/requestSystemFonts/.test(fontsCode), "the permission can be requested from inside the page");
+assert.ok(/onGrant/.test(fpSrc) && /data-ann-fp-grant/.test(fpSrc), "and the picker gives that request a button");
+assert.ok(/onGrantFonts/.test(indexSrc), "index.js wires the button to the mode");
+
+// THE constraint that makes the button work at all. Chrome shows the permission
+// prompt only while the user activation from the click is still live, and a
+// single `await` before queryLocalFonts() spends it — so the path from the click
+// handler down to the call must not go through one. Asserted because the failure
+// is invisible: the prompt simply never appears and the list stays short.
+const grantPath = /if \(state\.onGrant\) state\.onGrant\(\);/.test(fpSrc);
+assert.ok(grantPath, "the picker calls the grant handler straight from the click handler");
+const loadBody = /function loadSystemFonts\(onDone\) \{([\s\S]*?)\n  \}/.exec(fontsCode);
+assert.ok(loadBody, "loadSystemFonts is parseable");
+assert.ok(!/\bawait\b/.test(loadBody[1]), "no await between the click and queryLocalFonts() — it would spend the user activation the prompt needs");
 
 // The picking affordances Fonts shipped without, both reported live 2026-08-20.
 assert.ok(/ui\.setCrosshair\(true\)/.test(fontsCode), "fonts mode shows the crosshair while it is picking");
@@ -1664,6 +1703,84 @@ assert.strictEqual(h1.style.getPropertyValue("font-weight"), "", "the weight goe
 assert.strictEqual(legacy.style.getPropertyValue("font-family"), '"HeadingFont", serif', "an element that HAD an inline font gets its own value back, not an empty string");
 assert.strictEqual(legacy.style.getPropertyPriority("font-family"), "important", "and gets its !important back with it");
 assert.deepStrictEqual(fm.take().swaps, [], "nothing is reported as swapped after a reset");
+// Wrapped in an async IIFE rather than top-level await: this suite is a .cjs
+// file. Its promise is handed to the Promise.all at the bottom, so a failure in
+// here still fails the run instead of becoming an unhandled-rejection warning.
+const fontAccessCheck = (async function () {
+  // ---- the short-font-list bug, end to end ----------------------------------
+  //
+  // Reported live 2026-08-20: "none of the fonts i want are in the list". The
+  // permission for queryLocalFonts could only be obtained OUT OF BAND, from a
+  // grantPermissions call in the boot snippet — so a session that booted before
+  // that line existed, or through the fallback boot path, fell back to the curated
+  // 82 with no way back and a message naming neither cause nor remedy.
+  //
+  // This runs in Node precisely because the browser could not test it: three
+  // attempts each died on a different harness artifact — accumulated init scripts
+  // chaining two stubs, a permission dialog nothing can answer, and a grant that
+  // does not reach an already-loaded page. None of those touch the logic below.
+  let queryCalls = 0, allowed = false;
+  winStub.queryLocalFonts = function () {
+    queryCalls++;
+    return allowed
+      ? Promise.resolve([{ family: "GarageGothic-Bold" }, { family: "PP Gatwick" }, { family: "Inter" }])
+      : Promise.reject(new Error("SecurityError"));
+  };
+
+  const gate = fontsMod.create({
+    ui: { isOurs: function () { return false; }, showHighlight: function () {}, hideHighlight: function () {}, setCrosshair: function () {} },
+    notify: function () {}
+  });
+
+  await new Promise(function (r) { gate.loadSystemFonts(r); });
+  // Re-established AFTER the first await on purpose. This IIFE starts
+  // synchronously, yields here, and the rest of the file — including the block
+  // that tears the fake globals back down — runs while it is suspended. So by
+  // the time execution resumes, `location` is gone again.
+  global.location = { href: "https://example.com/pricing" };
+  assert.strictEqual(queryCalls, 1, "entering the mode tries the real font list once");
+  assert.strictEqual(gate.take().fontsFrom, "probed", "a refused call falls back to the curated set rather than to nothing");
+
+  // Calling again while the one-shot guard is spent must STILL call back. This
+  // is the branch that hung the suite for real: it returned early without
+  // invoking onDone, the awaiting promise never settled, and Node exited 0 with
+  // no output — a test that silently did not run, which reads exactly like a
+  // test that passed. updateToolbar() calls this on every repaint, so the branch
+  // is taken constantly in the browser.
+  const secondCall = await Promise.race([
+    new Promise(function (r) { gate.loadSystemFonts(function () { r("called back"); }); }),
+    new Promise(function (r) { setTimeout(function () { r("NEVER CALLED BACK"); }, 300); })
+  ]);
+  assert.strictEqual(secondCall, "called back", "a repeat call still calls back, even though it does no work");
+  assert.strictEqual(queryCalls, 1, "and it does not re-ask the browser — the guard is still doing its job");
+
+  // The message has to name the cause, and offer the fix when there is one.
+  const refusedNote = gate.catalogueNote();
+  assert.ok(refusedNote && refusedNote.ask, "a refusable state offers a way to ask");
+  assert.ok(/permission/i.test(refusedNote.text), "and says what is actually missing");
+
+  // THE fix: asking again, from a click, after the permission is granted. Before
+  // this existed the answer was "re-boot the whole browser context with a
+  // different snippet", which is not an answer a person can act on.
+  allowed = true;
+  winStub.__perm = "granted";
+  await new Promise(function (r) { gate.requestSystemFonts(r); });
+  assert.strictEqual(queryCalls, 2, "the button really re-asks — the one-shot guard is re-armed, not bypassed by luck");
+  assert.strictEqual(gate.take().fontsFrom, "system", "and the list becomes the real one");
+  assert.ok(gate.available().some(function (f) { return f.name === "GarageGothic-Bold" && f.source === "local"; }),
+    "the fonts that were missing are now present, marked as installed");
+  assert.strictEqual(gate.catalogueNote(), null, "and the note goes away rather than lingering over a list that is now complete");
+
+  // Each cause reads differently, because each needs a different answer from Matt.
+  winStub.isSecureContext = false;
+  const savedQuery = winStub.queryLocalFonts;
+  delete winStub.queryLocalFonts;
+  assert.strictEqual(gate.accessState(), "insecure", "a plain-http page is diagnosed as insecure, not as a refusal");
+  winStub.isSecureContext = true;
+  assert.strictEqual(gate.accessState(), "unsupported", "a browser without the API is diagnosed separately again");
+  winStub.queryLocalFonts = savedQuery;
+})();
+
 fm.disable();
 assert.strictEqual(docHandlers.click, undefined, "leaving the mode detaches the click handler — the page has to be usable again");
 assert.strictEqual(crosshair[crosshair.length - 1], false, "leaving the mode puts the cursor back");
@@ -1730,6 +1847,17 @@ assert.ok(/list\.style\.maxHeight[\s\S]{0,200}?var h = pop\.offsetHeight/.test(f
 
 
 Promise.all([
+  // Raced against a deadline, because the failure this suite hit for real was a
+  // promise that NEVER settled: Node then exits 0 with no output, and a test
+  // that silently did not run looks exactly like a test that passed. A hang has
+  // to be a red failure like any other.
+  Promise.race([
+    fontAccessCheck,
+    new Promise(function (_, reject) {
+      var t = setTimeout(function () { reject(new Error("font-access checks never settled — something returned without calling back")); }, 5000);
+      if (t.unref) t.unref();
+    })
+  ]),
   favPromise.then(function (v) {
     assert.strictEqual(v, null, "takeFavourite() resolves null (not undefined, not rejected) when nothing is pinned");
   })

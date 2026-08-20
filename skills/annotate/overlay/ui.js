@@ -458,6 +458,7 @@
       onFontStyle: fonts.onStyle,
       onFontClearStyles: fonts.onClearStyles,
       onFontsReset: fonts.onReset,
+      onGrantFonts: fonts.onGrantFonts,
       onChange: onChange,
       comparePanel: comparePanel,
       setCompareStatus: setCompareStatus,

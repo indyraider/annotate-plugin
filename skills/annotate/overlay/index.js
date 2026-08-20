@@ -113,6 +113,10 @@
         // it lands the picker shows the probed fallback. Guarded inside, so
         // calling it on every repaint costs nothing after the first.
         fontsMode.loadSystemFonts(function () { updateToolbar(); });
+        // The note has to name the real reason, and the reason lives in the
+        // permission layer. Asked once per mode entry, asynchronously — it only
+        // affects the wording, never whether the list loads.
+        fontsMode.refreshPermission(function () { uiHandles.refreshFontPicker(); });
         uiHandles.setModeTools(uiHandles.fontsPanel);
         uiHandles.setFontSlots(fontsMode.rows());
         // One sentence, and only the one that is true right now. The first
@@ -242,6 +246,14 @@
     // to stay quiet, so the panel is not rebuilt out from under the slider.
     uiHandles.onFontStyle(function (id, key, value, live) { fontsMode.setStyle(id, key, value, live); });
     uiHandles.onFontClearStyles(function (id) { fontsMode.clearStyles(id); });
+    // Asking the browser for the machine's font library, from Matt's own click.
+    // The permission used to be obtainable ONLY out of band, from a
+    // grantPermissions call in the boot snippet — so a session that booted
+    // without it, or through SKILL.md's fallback path, had no way back and just
+    // showed the curated set for ever.
+    uiHandles.onGrantFonts(function () {
+      fontsMode.requestSystemFonts(function () { updateToolbar(); uiHandles.refreshFontPicker(); });
+    });
 
     // Alt+A must be attached UNCONDITIONALLY, not inside point mode's enable()/
     // disable() bracket — mode is "off" (point mode disabled) at the exact

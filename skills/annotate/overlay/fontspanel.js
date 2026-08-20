@@ -45,7 +45,7 @@
 
   function create(pal, picker, opts) {
     opts = opts || {};
-    var handlers = { pickFont: null, style: null, clearStyles: null, remove: null, reset: null };
+    var handlers = { pickFont: null, style: null, clearStyles: null, remove: null, reset: null, grant: null };
     var expandedId = null;
     var catalogue = [], previewLoader = null, catalogueNote = "";
 
@@ -322,6 +322,7 @@
         picker.open(hit, {
           items: catalogue,
           note: catalogueNote,
+          onGrant: handlers.grant,
           reserve: opts.reserve || null,
           value: r ? r.value : "",
           onNeedPreview: previewLoader,
@@ -378,7 +379,8 @@
       onStyle: function (fn) { handlers.style = fn; },
       onClearStyles: function (fn) { handlers.clearStyles = fn; },
       onRemove: function (fn) { handlers.remove = fn; },
-      onReset: function (fn) { handlers.reset = fn; }
+      onReset: function (fn) { handlers.reset = fn; },
+      onGrantFonts: function (fn) { handlers.grant = fn; }
     };
   }
 

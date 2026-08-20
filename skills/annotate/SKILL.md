@@ -52,6 +52,10 @@ your context and nothing is fetched over the network.
    exchange `addInitScript` persists for the browser context, so every later navigation
    re-injects the modules on its own.
 
+   **The fallback boot path below does not grant `local-fonts`** — it has no access to the
+   Playwright context — so Fonts mode will open on the curated list. That is recoverable: the
+   picker's **Use my installed fonts** button asks for the permission directly.
+
    **If that tool is unavailable or refused**, the fallback is to read the eight files and
    `browser_evaluate` each one's contents in order, then call `index.setup()`. It works
    everywhere the first one does, but it costs ~24k tokens of your context per boot, which is
@@ -514,12 +518,31 @@ promote step (Typography) exactly like a favourite — a pairing he liked on scr
 inspiration, not yet a decision.
 
 **Where the fonts come from.** Installed fonts are enumerated with **`queryLocalFonts()`**,
-which needs the `local-fonts` permission — granted outright by the boot snippet, so there is
-no prompt. That is the difference between seeing your whole library and seeing a guess: 449
-families against 43 on this machine, measured 2026-08-20. If the grant is missing or the
-browser refuses, Fonts falls back to **canvas width-measurement** over a fixed candidate list
-and the picker says so at its foot rather than passing off a handful as everything.
-`__annotatorFontsTake()` reports which path ran, as `fontsFrom: "system" | "probed"`.
+which needs the `local-fonts` permission. The boot snippet grants it outright, so normally
+there is no prompt. That is the difference between seeing your whole library and seeing a
+guess: 449 families against 43 on this machine, measured 2026-08-20. The fallback is
+**canvas width-measurement** over a fixed candidate list.
+
+**If the list comes up short, the picker says why and offers the fix.** The permission used to
+be obtainable only out of band — from `grantPermissions` in the boot snippet — so a session
+that booted before that line existed, or through the fallback boot path below (which has no
+grant), showed the curated set for ever with no way back. It can now be asked for from inside
+the page, from Matt's own click, because the prompt appears in a browser window he is looking
+at. Four causes produce the same short list, and the note distinguishes them:
+
+| `fontAccess` | what the picker says | fixable in-page |
+|---|---|---|
+| `prompt` / `unknown` | "Your own fonts need the browser's permission" + **Use my installed fonts** | yes — click it |
+| `denied` | blocked for this site; allow it in site settings, then **Retry** | after changing site settings |
+| `insecure` | the page is plain `http`, so the browser hides the API entirely | no — needs `https` or `localhost` |
+| `unsupported` | this browser cannot list installed fonts | no |
+
+`__annotatorFontsTake()` reports both `fontsFrom: "system" | "probed"` and `fontAccess`, so a
+session that cannot see the picker can still say what is wrong. **The button's click path must
+stay synchronous down to `queryLocalFonts()`** — Chrome only shows the prompt while the user
+activation from that click is live, and one `await` on the way in spends it. `overlay.test.cjs`
+asserts there is no `await` in that path; the failure mode is invisible, because the prompt
+simply never appears.
 
 The web list is ~40 curated pairing families, hard-coded: the Google Fonts *catalogue* API
 needs a key, and a key in a dev tool is a key in a git repo. A web family you already own is

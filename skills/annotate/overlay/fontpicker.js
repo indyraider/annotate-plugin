@@ -56,7 +56,7 @@
   }
 
   function create(pal) {
-    var state = { items: [], value: "", onPick: null, onNeedPreview: null, active: -1, rows: [], filter: "all", anchor: null, reserve: null };
+    var state = { items: [], value: "", onPick: null, onNeedPreview: null, onGrant: null, active: -1, rows: [], filter: "all", anchor: null, reserve: null };
 
     var LIST_MAX = 296, LIST_MIN = 132;
 
@@ -123,10 +123,20 @@
     // curated handful — and "my font is missing" is unanswerable unless the
     // panel admits which list you are looking at.
     var note = document.createElement("div");
-    Object.assign(note.style, { display: "none", padding: "7px 11px", borderTop: "1px solid " + pal.hairline, color: pal.text3, font: "10px/1.4 " + SANS });
-    function setNote(text) {
-      note.textContent = text || "";
-      note.style.display = text ? "block" : "none";
+    Object.assign(note.style, { display: "none", padding: "8px 11px", borderTop: "1px solid " + pal.hairline, color: pal.text3, font: "10px/1.45 " + SANS });
+    var noteText = document.createElement("div");
+    var noteBtn = document.createElement("button");
+    noteBtn.setAttribute("data-ann-fp-grant", "");
+    Object.assign(noteBtn.style, { display: "none", marginTop: "6px", padding: "5px 9px", borderRadius: "6px", border: "1px solid " + pal.border, background: pal.surface2, color: pal.text, font: "600 11px " + SANS, cursor: "pointer" });
+    note.append(noteText, noteBtn);
+    // A note is data, not a string: the four reasons a list can come up short
+    // need four different answers, and only two of them can be fixed by asking.
+    function setNote(n) {
+      if (!n) { note.style.display = "none"; return; }
+      noteText.textContent = n.text || "";
+      noteBtn.textContent = n.label || "Use my installed fonts";
+      noteBtn.style.display = n.ask ? "inline-block" : "none";
+      note.style.display = "block";
     }
 
     pop.append(searchWrap, filterBar, list, empty, note);
@@ -254,6 +264,7 @@
       state.value = opts.value || "";
       state.onPick = opts.onPick || null;
       state.onNeedPreview = opts.onNeedPreview || null;
+      state.onGrant = opts.onGrant || null;
       if (typeof opts.note === "string") setNote(opts.note);
       state.filter = "all";
       state.active = -1;
@@ -293,6 +304,13 @@
         paintChips();
         render();
         place();
+        return;
+      }
+      // The permission ask. It runs INSIDE this click handler on purpose — Chrome
+      // only shows the prompt while the activation from the click is still live,
+      // so this cannot be deferred, queued, or awaited on the way in.
+      if (t.closest("[data-ann-fp-grant]") && pop.contains(t.closest("[data-ann-fp-grant]"))) {
+        if (state.onGrant) state.onGrant();
         return;
       }
       var row = t.closest("[data-ann-fp-name]");
