@@ -10,6 +10,18 @@ const assert = require("node:assert");
 // Modules are loaded individually so a break is attributed to one file.
 const path = require("node:path");
 const MOD = function (name) { return path.join(__dirname, "overlay", name); };
+
+// Source with the full-line comments stripped out.
+//
+// Every "this file must NOT do X" assertion needs it. These modules explain
+// their own bans in comments — why queryLocalFonts is avoided, why the datalist
+// was dropped, why the colour ramp went — so a grep over raw source matches the
+// EXPLANATION as readily as the thing it forbids, and the assertion fails on the
+// prose defending the very rule it enforces. That happened three times before
+// this existed; each time the fix was to write the same filter again inline.
+const codeOf = function (s) {
+  return s.split("\n").filter(function (l) { return l.trim().indexOf("//") !== 0; }).join("\n");
+};
 const core = require(MOD("core.js"));
 
 assert.strictEqual(typeof core.buildSelector, "function", "core exports buildSelector");
@@ -104,15 +116,17 @@ assert.strictEqual(findRscEntry(null, "http://x/chat/c/abc", 1000, 1200), null, 
 const paletteSrc = fs.readFileSync(MOD("palette.js"), "utf8");
 const uiSrc = fs.readFileSync(MOD("ui.js"), "utf8");
 
-// The palette must keep deriving from the HOST page, not a hardcoded theme —
-// this is what makes the overlay look native on whatever site it lands on.
-assert.ok(/getComputedStyle/.test(paletteSrc), "palette derives from the host page");
-assert.ok(/ACCENT/.test(paletteSrc), "palette keeps a fixed accent identity");
+// The palette is FIXED and dark. It used to derive itself from the host page's
+// computed background and text so the toolbar looked native wherever it landed;
+// Matt's call 2026-08-20 was to hardcode it, because a chrome that changes
+// colour depending on the site is a chrome you re-read every time. These
+// assertions are the old ones inverted, deliberately — the derivation is not a
+// thing to restore by accident.
+const paletteCode = codeOf(paletteSrc);
+assert.ok(!/getComputedStyle/.test(paletteCode), "the palette is hardcoded, not derived from the host page");
+assert.ok(!/color-mix/.test(paletteCode), "the derived colour ramp is gone with it");
+assert.ok(/ACCENT/.test(paletteSrc), "palette keeps a fixed accent identity — it is what makes a highlight read as ours");
 
-// Luminance is measured through a canvas on purpose: string-parsing misreads
-// modern lab()/oklch() channel ranges. Guard the canvas path against being
-// "simplified" back into a regex.
-assert.ok(/getContext\(["']2d["']\)/.test(paletteSrc), "palette resolves colour via canvas, not string parsing");
 
 // ui.js owns chrome only — no mode logic, no annotation records.
 assert.ok(!/__annotations\b/.test(uiSrc), "ui.js does not touch annotation state");
@@ -132,7 +146,74 @@ for (const f of ["core.js", "palette.js", "fontpicker.js", "fontspanel.js", "ui.
 const palette = require(MOD("palette.js"));
 assert.strictEqual(typeof palette.build, "function", "palette exports build");
 assert.strictEqual(typeof palette.SANS, "string", "palette exports SANS");
-assert.strictEqual(typeof palette.MONO, "string", "palette exports MONO");
+
+// Dark means dark: the two surfaces consumers paint panels with must actually be
+// dark, or the light text above them is unreadable. Parsed, not eyeballed.
+const paletteBuilt = palette.build();
+[["elevated", paletteBuilt.elevated], ["surface", paletteBuilt.surface]].forEach(function (pair) {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(pair[1]);
+  assert.ok(m, "palette." + pair[0] + " is an opaque hex colour, got " + pair[1]);
+  const lum = (parseInt(m[1], 16) * 0.2126 + parseInt(m[2], 16) * 0.7152 + parseInt(m[3], 16) * 0.0722) / 255;
+  assert.ok(lum < 0.25, "palette." + pair[0] + " is dark (luminance " + lum.toFixed(3) + ")");
+});
+const textLum = (function (hex) {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  return (parseInt(m[1], 16) * 0.2126 + parseInt(m[2], 16) * 0.7152 + parseInt(m[3], 16) * 0.0722) / 255;
+})(paletteBuilt.text);
+assert.ok(textLum > 0.75, "the body text colour is light enough to sit on those surfaces");
+
+// Contrast, computed rather than eyeballed. Hardcoding the theme means nobody is
+// checking these against a real page any more, and text3 carries the SMALLEST
+// text in the tool — the 10-11px control labels and element counts. Its first
+// hand-picked value measured 3.08:1 on a card, which is a legibility bug that
+// looks fine to whoever picked it on a good monitor.
+function srgbLum(hex) {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  assert.ok(m, "expected an opaque hex colour, got " + hex);
+  const chan = function (h) {
+    const c = parseInt(h, 16) / 255;
+    return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * chan(m[1]) + 0.7152 * chan(m[2]) + 0.0722 * chan(m[3]);
+}
+function contrast(a, b) {
+  const la = srgbLum(a), lb = srgbLum(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+["text", "text2", "text3"].forEach(function (ink) {
+  ["elevated", "surface", "surface2"].forEach(function (ground) {
+    const r = contrast(paletteBuilt[ink], paletteBuilt[ground]);
+    assert.ok(r >= 4.5, "palette." + ink + " on palette." + ground + " is " + r.toFixed(2) + ":1, below the 4.5:1 floor");
+  });
+});
+// And they have to stay distinguishable from each other, or the hierarchy the
+// three tones exist to express collapses into one grey.
+assert.ok(contrast(paletteBuilt.text, paletteBuilt.text3) > 1.5, "the ink tones are actually different from one another");
+
+// build() must hand back a COPY. Twenty call sites read `pal.x`; one that wrote
+// to it would restyle the whole overlay from somewhere unrelated.
+//
+// The expected value is captured as a STRING first, on purpose. Comparing
+// against `paletteBuilt.text` looks equivalent and is not: if build() handed out
+// the shared object, the write below would change that property too, both sides
+// would move together, and the assertion would pass while proving nothing.
+const textBefore = String(palette.build().text);
+palette.build().text = "#ff0000";
+assert.strictEqual(palette.build().text, textBefore, "build() returns a copy, so a consumer cannot mutate the palette");
+
+// One typeface for the whole overlay. The monospace face is gone; the column
+// alignment it bought comes from tabular figures instead, set once in ui.js.
+assert.strictEqual(palette.MONO, undefined, "there is no monospace face any more");
+assert.ok(/Geist/.test(palette.SANS), "the UI face is Geist");
+assert.ok(/system-ui|sans-serif/.test(palette.SANS), "with a real fallback stack — Geist is not installed, it is fetched, and a CSP can refuse it");
+assert.ok(/tabular-nums/.test(uiSrc), "figures stay tabular, which is what pays for dropping the monospace");
+assert.ok(/FONT_CSS_URL/.test(uiSrc), "ui.js actually loads the face — a stack naming a font nobody has is a no-op");
+["MONO"].forEach(function (gone) {
+  ["ui.js", "fontpicker.js", "fontspanel.js", "study.js"].forEach(function (f) {
+    assert.ok(!new RegExp("\\b" + gone + "\\b").test(codeOf(fs.readFileSync(MOD(f), "utf8"))), gone + " is gone from " + f);
+  });
+});
+
 
 const ui = require(MOD("ui.js"));
 assert.strictEqual(typeof ui.create, "function", "ui exports create");
@@ -1127,24 +1208,11 @@ assert.strictEqual(core.classifyValue(24, [6, 10, 16, 999]).verdict, "new",
 assert.strictEqual(core.classifyValue(24, [6, 10, 16, 999], { threshold: 0.5 }).verdict, "conflict",
   "the old band is still reachable by passing threshold explicitly");
 
-// ---- Phase 2: the chrome must be readable on a page with no background -----
-
-// Found by looking at a screenshot, not by any test: stripe.com paints its
-// background on a wrapper div, so BOTH html and body compute to transparent.
-// The palette used to fall back to a hard-coded dark surface while still taking
-// the text colour from the page — black text on a dark panel, unreadable, on
-// every light site built that way, which is a large share of them.
-// The text colour is the signal that survives when the background does not.
-assert.strictEqual(typeof palette.fallbackBg, "function", "palette exports fallbackBg");
-assert.strictEqual(palette.fallbackBg(0), "rgb(250,250,250)", "black page text means a LIGHT page — never assume dark");
-assert.strictEqual(palette.fallbackBg(0.2), "rgb(250,250,250)", "dark-ish text still means a light page");
-assert.strictEqual(palette.fallbackBg(0.9), "rgb(24,24,27)", "light page text means a dark page");
-assert.strictEqual(palette.fallbackBg(1), "rgb(24,24,27)", "white text means a dark page");
-
-// The fallback is only reached when neither element paints one — a real
-// background must always win over the inference.
-assert.ok(/var bg = bgRaw \|\| fallbackBg\(/.test(paletteSrc), "a real page background takes precedence over the inferred one");
-assert.ok(/pick\(h, "backgroundColor", null\)/.test(paletteSrc), "the background chain bottoms out at null so 'no background' is distinguishable from a dark one");
+// The whole "is this page light or dark" apparatus — the canvas luminance probe,
+// the inference from text colour when a page paints no background (stripe.com),
+// the fallbackBg ladder — went with the hardcoded palette above. It is not
+// missing; nothing asks the question any more.
+assert.strictEqual(palette.fallbackBg, undefined, "the light/dark inference is gone, not merely unused");
 
 // ---- Phase 2: the Layout B toolbar ----------------------------------------
 
@@ -1330,7 +1398,7 @@ writtenProps.forEach(function (prop) {
 //
 // Checked against CODE, not prose — fonts.js explains this in a comment, and a
 // grep over raw source matches the explanation as readily as the call.
-const fontsCode = fontsSrc.split("\n").filter(function (l) { return l.trim().indexOf("//") !== 0; }).join("\n");
+const fontsCode = codeOf(fontsSrc);
 assert.ok(/queryLocalFonts\(\)/.test(fontsCode), "fonts.js enumerates the real system font list");
 // Both halves matter: enumeration can be refused (no permission, older browser,
 // a prompt nobody answers), and a picker that then shows nothing is worse than
@@ -1617,8 +1685,7 @@ assert.ok(/fontFamily: '"' \+ f\.name \+ '"/.test(fpSrc),
 // Checked against CODE, not prose — both files explain in comments why the
 // datalist was dropped, and a grep over raw source fails on the explanation for
 // the very rule it enforces.
-const stripComments = function (s) { return s.split("\n").filter(function (l) { return l.trim().indexOf("//") !== 0; }).join("\n"); };
-assert.ok(!/datalist/.test(stripComments(fpSrc) + stripComments(uiSrc)),
+assert.ok(!/datalist/.test(codeOf(fpSrc) + codeOf(uiSrc)),
   "the native datalist is gone from both chrome files");
 
 // Forty stylesheets fetched to fill a list nobody scrolled is the cost this

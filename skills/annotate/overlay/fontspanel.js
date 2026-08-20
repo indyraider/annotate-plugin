@@ -18,7 +18,6 @@
 })(typeof self !== "undefined" ? self : this, function (palette) {
   if (!palette) throw new Error("annotate: fontspanel.js requires palette.js to load first");
   var SANS = palette.SANS;
-  var MONO = palette.MONO;
 
   // Words, not glyphs. "Aa" for original and "Aa" for title case are the same
   // two characters, and a control whose options cannot be told apart is not a
@@ -151,7 +150,7 @@
         // Muted until you have actually set it: the number is the page's own
         // until then, and showing it at full strength would claim a decision
         // nobody made.
-        Object.assign(out.style, { flex: "none", width: "62px", textAlign: "right", font: "11px " + MONO, color: set ? pal.text : pal.text3 });
+        Object.assign(out.style, { flex: "none", width: "62px", textAlign: "right", font: "11px " + SANS, color: set ? pal.text : pal.text3 });
 
         row.append(label(s.label), input, out);
         if (set) row.appendChild(ghostButton("↺", "fonts-clear-one", r.id, "Put " + s.label.toLowerCase() + " back"))
@@ -175,7 +174,7 @@
         weight.appendChild(o);
       });
       Object.assign(weight.style, {
-        appearance: "none", WebkitAppearance: "none", font: "600 11px " + MONO,
+        appearance: "none", WebkitAppearance: "none", font: "600 11px " + SANS,
         padding: "5px 22px 5px 9px", borderRadius: "7px", border: "1px solid " + pal.border,
         background: pal.elevated, color: pal.text2, cursor: "pointer"
       });
@@ -218,10 +217,10 @@
       var from = document.createElement("span");
       from.textContent = r.label;
       from.title = r.label;
-      Object.assign(from.style, { flex: "1", minWidth: "0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: pal.text2, font: "600 11px " + MONO });
+      Object.assign(from.style, { flex: "1", minWidth: "0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: pal.text2, font: "600 11px " + SANS });
       var count = document.createElement("span");
       count.textContent = r.detail;
-      Object.assign(count.style, { flex: "none", color: pal.text3, font: "10px " + MONO, marginRight: "2px" });
+      Object.assign(count.style, { flex: "none", color: pal.text3, font: "10px " + SANS, marginRight: "2px" });
       var kill = document.createElement("button"); kill.textContent = "✕";
       kill.setAttribute("aria-label", "Remove this font");
       kill.setAttribute("data-ann-act", "fonts-remove");

@@ -13,7 +13,6 @@
   if (!fontpicker) throw new Error("annotate: ui.js requires fontpicker.js to load first");
   if (!fontspanel) throw new Error("annotate: ui.js requires fontspanel.js to load first");
   var SANS = palette.SANS;
-  var MONO = palette.MONO;
 
   function create(pal) {
     // ---- UI ----
@@ -21,6 +20,16 @@
     var Z = 2147483647;
 
     // Crosshair cursor over the whole app while ON (our own UI keeps its normal cursors).
+    // Geist, loaded once for the whole overlay. It is not installed on this
+    // machine, so without this the chrome silently falls back to system-ui and
+    // "hardcode the UI font" quietly does nothing. A site whose CSP refuses the
+    // request keeps the fallback stack and stays perfectly usable — this is
+    // chrome, not content, so a missing typeface costs looks and nothing else.
+    var fontLink = document.createElement("link"); fontLink.className = "__ann-ui";
+    fontLink.rel = "stylesheet";
+    fontLink.href = palette.FONT_CSS_URL;
+    document.head.appendChild(fontLink);
+
     var cursorStyle = document.createElement("style"); cursorStyle.className = "__ann-ui";
     cursorStyle.textContent = "html.__ann-cross, html.__ann-cross :not(.__ann-ui):not(.__ann-ui *){cursor:crosshair !important}"
       // The picked group, outlined where it stands. A single absolutely-placed
@@ -42,6 +51,11 @@
       // small accent thumb say the same thing quietly. Pseudo-elements are the
       // only way to reach either, so this cannot live in the inline styles the
       // rest of the chrome is built from.
+      // Tabular figures for the entire overlay. This is what pays for dropping
+      // the monospace face: every measured value in this tool sits in a column —
+      // element counts, millisecond deltas, tracking readouts — and proportional
+      // digits make those columns jitter as the numbers change under a drag.
+      + ".__ann-ui,.__ann-ui *{font-variant-numeric:tabular-nums}"
       + ".__ann-ui input[type=range]{-webkit-appearance:none;appearance:none;background:transparent;height:14px;margin:0}"
       + ".__ann-ui input[type=range]::-webkit-slider-runnable-track{height:3px;border-radius:2px;background:" + pal.hover + "}"
       + ".__ann-ui input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:12px;height:12px;"
@@ -64,7 +78,7 @@
 
     // Inspector card — DevTools-style computed-style readout that follows the cursor.
     var insp = document.createElement("div"); insp.className = "__ann-ui";
-    Object.assign(insp.style, { position: "fixed", zIndex: Z, display: "none", maxWidth: "300px", pointerEvents: "none", background: pal.elevated, border: "1px solid " + pal.border, borderRadius: "8px", padding: "8px 10px", font: "11px/1.55 " + MONO, color: pal.text, boxShadow: "0 8px 30px rgba(0,0,0,.4)" });
+    Object.assign(insp.style, { position: "fixed", zIndex: Z, display: "none", maxWidth: "300px", pointerEvents: "none", background: pal.elevated, border: "1px solid " + pal.border, borderRadius: "8px", padding: "8px 10px", font: "11px/1.55 " + SANS, color: pal.text, boxShadow: "0 8px 30px rgba(0,0,0,.4)" });
     document.body.appendChild(insp);
     function inspRow(label, value, swatch) {
       var d = document.createElement("div"); Object.assign(d.style, { display: "flex", alignItems: "center", gap: "6px", whiteSpace: "nowrap", overflow: "hidden" });
@@ -107,7 +121,7 @@
     function kbdRow(keys, desc) {
       var d = document.createElement("div"); Object.assign(d.style, { display: "flex", alignItems: "center", gap: "8px", padding: "3px 0" });
       var kw = document.createElement("div"); Object.assign(kw.style, { display: "flex", gap: "3px", flex: "none", minWidth: "92px" });
-      keys.forEach(function (k) { var kb = document.createElement("span"); kb.textContent = k; Object.assign(kb.style, { background: pal.surface2, border: "1px solid " + pal.border, borderRadius: "4px", padding: "1px 5px", font: "600 10px/1.6 " + MONO, color: pal.text2 }); kw.appendChild(kb); });
+      keys.forEach(function (k) { var kb = document.createElement("span"); kb.textContent = k; Object.assign(kb.style, { background: pal.surface2, border: "1px solid " + pal.border, borderRadius: "4px", padding: "1px 5px", font: "600 10px/1.6 " + SANS, color: pal.text2 }); kw.appendChild(kb); });
       var t = document.createElement("span"); t.textContent = desc; t.style.color = pal.text2;
       d.append(kw, t); return d;
     }
@@ -167,7 +181,7 @@
         Object.assign(row.style, { display: "flex", gap: "8px", alignItems: "baseline", padding: "4px 6px", borderRadius: "6px", cursor: onPick ? "pointer" : "default" });
         var badge = document.createElement("span");
         badge.textContent = it.n;
-        Object.assign(badge.style, { flex: "none", minWidth: "18px", textAlign: "center", background: it.status === "new" ? pal.accent : pal.surface2, color: it.status === "new" ? pal.accentFg : pal.text3, borderRadius: "5px", font: "600 10px/1.7 " + MONO });
+        Object.assign(badge.style, { flex: "none", minWidth: "18px", textAlign: "center", background: it.status === "new" ? pal.accent : pal.surface2, color: it.status === "new" ? pal.accentFg : pal.text3, borderRadius: "5px", font: "600 10px/1.7 " + SANS });
         var txt = document.createElement("span");
         txt.textContent = it.text;
         Object.assign(txt.style, { color: pal.text2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
@@ -389,7 +403,7 @@
         Object.assign(row.style, { display: "flex", gap: "10px", alignItems: "baseline", padding: "3px 6px", borderRadius: "5px", background: pal.surface2 });
         var d = document.createElement("span");
         d.textContent = r.detail;
-        Object.assign(d.style, { flex: "none", minWidth: "112px", color: TONE[r.tone] || pal.text2, font: "600 11px " + MONO });
+        Object.assign(d.style, { flex: "none", minWidth: "112px", color: TONE[r.tone] || pal.text2, font: "600 11px " + SANS });
         var l = document.createElement("span");
         l.textContent = r.label;
         Object.assign(l.style, { color: pal.text2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });

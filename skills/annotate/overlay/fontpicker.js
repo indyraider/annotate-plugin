@@ -16,7 +16,6 @@
 })(typeof self !== "undefined" ? self : this, function (palette) {
   if (!palette) throw new Error("annotate: fontpicker.js requires palette.js to load first");
   var SANS = palette.SANS;
-  var MONO = palette.MONO;
   var Z = 2147483647;
 
   var FILTERS = [
@@ -201,7 +200,7 @@
         if (f.source === "web" && state.filter === "all") {
           var tag = document.createElement("span");
           tag.textContent = "web";
-          Object.assign(tag.style, { flex: "none", color: pal.text3, font: "10px " + MONO });
+          Object.assign(tag.style, { flex: "none", color: pal.text3, font: "10px " + SANS });
           row.append(tick, name, tag);
         } else {
           row.append(tick, name);

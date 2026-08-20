@@ -691,11 +691,21 @@ Repeat until Matt says done (or the browser closes / evaluate errors):
   would silently stop persisting every annotation. An in-memory map backs it up when the
   quota refuses. Ceiling: an image only survives a page reload if it fit in localStorage;
   the text comment always survives, so a lost attachment degrades, never blocks.
-- The overlay UI derives its own palette at runtime from the **host page's computed**
-  background and text colors (`getComputedStyle` + `color-mix`, see `overlay/palette.js`),
-  plus one fixed accent color — it does not read any app's design tokens or CSS variables.
-  That's what lets it look native on any site it's dropped into, light or dark, standalone
-  from whatever design system (if any) the host page uses.
+- **The overlay chrome is a fixed dark theme in one typeface** (`overlay/palette.js`). It used
+  to derive its colours at runtime from the host page's computed background and text, so it
+  looked native wherever it landed; Matt's call 2026-08-20 was to hardcode it, because a
+  chrome that changes colour depending on the site is a chrome you re-read every time. A dark
+  panel with a real border and shadow reads as *the tool, not the page* on a white site and a
+  black one alike. It still reads no app's design tokens or CSS variables.
+  - **Geist for everything, and there is no monospace face.** Geist is **not installed** on
+    this machine, so `ui.js` loads it from Google once per page; the stack falls back to
+    `system-ui` until it arrives, or permanently on a site whose CSP refuses the request —
+    this is chrome, not content, so a missing typeface costs looks and nothing else. The
+    column alignment the old monospace bought now comes from `font-variant-numeric:
+    tabular-nums`, set once over the whole chrome.
+  - The muted tones are chosen **by measured contrast, not by eye** — `text3` carries the
+    10–11px control labels, and its first hand-picked value came in at 3.08:1 against a card.
+    `overlay.test.cjs` computes every ink-on-surface pair and fails below 4.5:1.
 - **Never add an `<input type="file">` to the overlay.** This browser is Playwright-driven:
   Chrome hands the file chooser to the automation client instead of opening the OS dialog,
   so Matt sees nothing, and every queued chooser makes your next tool call fail with
