@@ -4,12 +4,14 @@
 ;(function (root, factory) {
   var palette = (typeof module !== "undefined" && module.exports) ? require("./palette.js") : (root.__annotatorMods && root.__annotatorMods.palette);
   var fontpicker = (typeof module !== "undefined" && module.exports) ? require("./fontpicker.js") : (root.__annotatorMods && root.__annotatorMods.fontpicker);
-  var api = factory(palette, fontpicker);
+  var fontspanel = (typeof module !== "undefined" && module.exports) ? require("./fontspanel.js") : (root.__annotatorMods && root.__annotatorMods.fontspanel);
+  var api = factory(palette, fontpicker, fontspanel);
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else { root.__annotatorMods = root.__annotatorMods || {}; root.__annotatorMods.ui = api; }
-})(typeof self !== "undefined" ? self : this, function (palette, fontpicker) {
+})(typeof self !== "undefined" ? self : this, function (palette, fontpicker, fontspanel) {
   if (!palette) throw new Error("annotate: ui.js requires palette.js to load first");
   if (!fontpicker) throw new Error("annotate: ui.js requires fontpicker.js to load first");
+  if (!fontspanel) throw new Error("annotate: ui.js requires fontspanel.js to load first");
   var SANS = palette.SANS;
   var MONO = palette.MONO;
 
@@ -33,7 +35,19 @@
       // the keyboard was. Scoped under .__ann-ui so the host page's own focus
       // styling is never touched.
       + ".__ann-ui button:focus-visible,.__ann-ui input:focus-visible,.__ann-ui select:focus-visible,.__ann-ui textarea:focus-visible"
-      + "{outline:2px solid " + pal.accent + ";outline-offset:1px;border-radius:6px}";
+      + "{outline:2px solid " + pal.accent + ";outline-offset:1px;border-radius:6px}"
+      // The type sliders. A default range control paints a thick dark track that
+      // reads as four heavy bars across a light panel — the loudest thing in a
+      // panel whose job is to let you look at the PAGE. A hairline track and a
+      // small accent thumb say the same thing quietly. Pseudo-elements are the
+      // only way to reach either, so this cannot live in the inline styles the
+      // rest of the chrome is built from.
+      + ".__ann-ui input[type=range]{-webkit-appearance:none;appearance:none;background:transparent;height:14px;margin:0}"
+      + ".__ann-ui input[type=range]::-webkit-slider-runnable-track{height:3px;border-radius:2px;background:" + pal.hover + "}"
+      + ".__ann-ui input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:12px;height:12px;"
+      + "margin-top:-4.5px;border-radius:50%;background:" + pal.accent + ";border:0;cursor:pointer}"
+      + ".__ann-ui input[type=range]::-moz-range-track{height:3px;border-radius:2px;background:" + pal.hover + "}"
+      + ".__ann-ui input[type=range]::-moz-range-thumb{width:12px;height:12px;border-radius:50%;background:" + pal.accent + ";border:0;cursor:pointer}";
     document.head.appendChild(cursorStyle);
 
     var hl = document.createElement("div"); hl.className = "__ann-ui";
@@ -385,184 +399,13 @@
       cmpRows.style.display = "flex";
     }
 
-    // ---- fonts panel: one card per font the page uses ----
-    //
-    // Two lines per card, and the split is the point. The top line is a FACT
-    // about the page (this font, this many elements). The bottom line is the
-    // CONTROL (try this instead, at this weight). The first version crammed both
-    // into one row with a bare datalist, and it read as a form rather than as a
-    // typographic tool — the one thing on screen that had to show a typeface was
-    // rendering every option in the browser's UI font.
-    //
-    // This file still does not know what a "font slot" means. Rows arrive as
-    // plain {id, label, detail, value, weight, weights, status}, and choosing one
-    // calls back with three primitives.
+    // ---- fonts panel ----
+    // Built by its own module. It grew a full typographic control surface —
+    // case, size, leading, tracking, word spacing, weight, italic, small caps —
+    // and that is more UI than the highlight, inspector, toolbar and queue put
+    // together. `bar` is handed over so the picker knows what it must not cover.
     var picker = fontpicker.create(pal);
-    var fontsPanel = document.createElement("div"); fontsPanel.className = "__ann-ui";
-    Object.assign(fontsPanel.style, { display: "flex", flexDirection: "column", gap: "9px", width: "418px", font: "12px " + SANS });
-    var fontsHead = document.createElement("div");
-    Object.assign(fontsHead.style, { display: "flex", alignItems: "center", gap: "10px" });
-    var fontsStatus = document.createElement("div");
-    Object.assign(fontsStatus.style, { color: pal.text3, font: "11px/1.45 " + SANS, flex: "1", minWidth: "0" });
-    var fontsReset = document.createElement("button"); fontsReset.textContent = "Reset";
-    fontsReset.setAttribute("data-ann-act", "fonts-reset");
-    fontsReset.title = "Put every swapped element back to the font the page gave it";
-    Object.assign(fontsReset.style, { padding: "5px 11px", borderRadius: "7px", border: "1px solid " + pal.border, background: "transparent", color: pal.text2, font: "600 11px " + SANS, cursor: "pointer", flex: "none" });
-    fontsHead.append(fontsStatus, fontsReset);
-    var fontsRows = document.createElement("div");
-    Object.assign(fontsRows.style, { display: "flex", flexDirection: "column", gap: "7px", maxHeight: "244px", overflowY: "auto" });
-    fontsPanel.append(fontsHead, fontsRows);
-
-    function setFontsStatus(text) { fontsStatus.textContent = text || ""; }
-
-    // The catalogue and the preview loader belong to whoever owns fonts, not to
-    // this file — it is handed them and passes them straight to the picker.
-    var fontCatalogue = [], fontPreviewLoader = null, fontCatalogueNote = "";
-    function setFontOptions(items, onNeedPreview, note) {
-      fontCatalogue = items || [];
-      fontPreviewLoader = onNeedPreview || null;
-      fontCatalogueNote = note || "";
-      picker.setNote(fontCatalogueNote);
-      picker.refresh();
-    }
-
-    var fontSlotChange = null, fontSlotRemove = null;
-    function onFontSlotChange(fn) { fontSlotChange = fn; }
-    function onFontSlotRemove(fn) { fontSlotRemove = fn; }
-    function rowState(id) {
-      var row = fontsRows.querySelector('[data-ann-slot-row="' + id + '"]');
-      if (!row) return null;
-      var wt = row.querySelector("[data-ann-change='font-weight']");
-      return { row: row, family: row.getAttribute("data-ann-family") || "", weight: wt ? wt.value : "keep" };
-    }
-    function report(id, family, weight) { if (fontSlotChange) fontSlotChange(Number(id), family, weight); }
-
-    onAct("font-open", function (hit) {
-      var id = hit.getAttribute("data-ann-slot");
-      var st = rowState(id);
-      if (!st) return;
-      picker.open(hit, {
-        items: fontCatalogue,
-        note: fontCatalogueNote,
-        // The whole bar, not just this button — see fontpicker's floorY().
-        reserve: bar,
-        value: st.family,
-        onNeedPreview: fontPreviewLoader,
-        onPick: function (name) {
-          var now = rowState(id);
-          report(id, name, now ? now.weight : "keep");
-        }
-      });
-    });
-    // Clearing a card is not the same as removing it: you are still working on
-    // that font, you just want the page's own back while you look.
-    onAct("font-clear", function (hit) {
-      var id = hit.getAttribute("data-ann-slot");
-      var st = rowState(id);
-      report(id, "", st ? st.weight : "keep");
-    });
-    onChange("font-weight", function (hit) {
-      var id = hit.closest("[data-ann-slot-row]").getAttribute("data-ann-slot-row");
-      var st = rowState(id);
-      report(id, st ? st.family : "", hit.value);
-    });
-    onAct("fonts-remove", function (hit) {
-      if (fontSlotRemove) fontSlotRemove(Number(hit.getAttribute("data-ann-slot")));
-    });
-
-    function setFontSlots(rows) {
-      fontsRows.textContent = "";
-      if (!rows || !rows.length) { fontsRows.style.display = "none"; return; }
-      fontsRows.style.display = "flex";
-      rows.forEach(function (r) {
-        var card = document.createElement("div");
-        card.setAttribute("data-ann-slot-row", r.id);
-        card.setAttribute("data-ann-family", r.value || "");
-        Object.assign(card.style, { display: "flex", flexDirection: "column", gap: "6px", background: pal.surface2, border: "1px solid " + pal.hairline, borderRadius: "9px", padding: "8px 9px" });
-
-        // Line 1 — what the page has. Read-only fact, so it is set in the data
-        // font the rest of this tool uses for measured values.
-        var fact = document.createElement("div");
-        Object.assign(fact.style, { display: "flex", alignItems: "baseline", gap: "8px" });
-        var from = document.createElement("span");
-        from.textContent = r.label;
-        from.title = r.label;
-        Object.assign(from.style, { flex: "1", minWidth: "0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: pal.text2, font: "600 11px " + MONO });
-        var count = document.createElement("span");
-        count.textContent = r.detail;
-        Object.assign(count.style, { flex: "none", color: pal.text3, font: "10px " + MONO, marginRight: "2px" });
-        var kill = document.createElement("button"); kill.textContent = "✕";
-        kill.setAttribute("aria-label", "Remove this font");
-        kill.setAttribute("data-ann-act", "fonts-remove");
-        kill.setAttribute("data-ann-slot", r.id);
-        Object.assign(kill.style, { flex: "none", width: "17px", height: "17px", padding: "0", borderRadius: "5px", border: "0", background: "transparent", color: pal.text3, font: "10px " + SANS, cursor: "pointer", lineHeight: "1" });
-        fact.append(from, count, kill);
-
-        // Line 2 — what you are trying. The trigger renders the chosen family in
-        // that family, so the control shows its own answer.
-        var controls = document.createElement("div");
-        Object.assign(controls.style, { display: "flex", alignItems: "stretch", gap: "6px" });
-
-        var trigger = document.createElement("button");
-        trigger.setAttribute("data-ann-act", "font-open");
-        trigger.setAttribute("data-ann-slot", r.id);
-        Object.assign(trigger.style, { flex: "1", minWidth: "0", display: "flex", alignItems: "center", gap: "7px", padding: "6px 9px", borderRadius: "7px", border: "1px solid " + pal.border, background: pal.elevated, cursor: "pointer", textAlign: "left" });
-        var triggerText = document.createElement("span");
-        triggerText.textContent = r.value || "Choose a font";
-        Object.assign(triggerText.style, {
-          flex: "1", minWidth: "0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-          color: r.value ? pal.text : pal.text3,
-          fontFamily: r.value ? '"' + r.value + '", ' + SANS : SANS,
-          fontSize: r.value ? "14px" : "12px"
-        });
-        trigger.append(triggerText, picker.chevron(6));
-
-        var weightWrap = document.createElement("div");
-        Object.assign(weightWrap.style, { position: "relative", display: "flex", flex: "none" });
-        var weight = document.createElement("select");
-        weight.setAttribute("data-ann-change", "font-weight");
-        weight.setAttribute("aria-label", "Weight");
-        (r.weights || []).forEach(function (w) {
-          var o = document.createElement("option"); o.value = w; o.textContent = w;
-          if (w === r.weight) o.selected = true;
-          weight.appendChild(o);
-        });
-        // appearance:none strips the OS control that made this look pasted in
-        // from another application; the chevron beside it is ours.
-        Object.assign(weight.style, {
-          appearance: "none", WebkitAppearance: "none",
-          font: "600 11px " + MONO, padding: "6px 20px 6px 9px", borderRadius: "7px",
-          border: "1px solid " + pal.border, background: pal.elevated, color: pal.text2, cursor: "pointer"
-        });
-        var wChev = picker.chevron(5);
-        Object.assign(wChev.style, { position: "absolute", right: "8px", top: "50%", marginTop: "-4px" });
-        weightWrap.append(weight, wChev);
-
-        controls.append(trigger, weightWrap);
-        if (r.value) {
-          var clear = document.createElement("button");
-          clear.textContent = "↺";
-          clear.setAttribute("aria-label", "Put this font back");
-          clear.setAttribute("data-ann-act", "font-clear");
-          clear.setAttribute("data-ann-slot", r.id);
-          clear.title = "Put this font back";
-          Object.assign(clear.style, { flex: "none", width: "28px", borderRadius: "7px", border: "1px solid " + pal.border, background: "transparent", color: pal.text3, font: "12px " + SANS, cursor: "pointer" });
-          controls.appendChild(clear);
-        }
-
-        card.append(fact, controls);
-        fontsRows.appendChild(card);
-
-        // A per-card message (a font that could not load here) sits under its own
-        // card — one shared status line would blame whichever card was touched last.
-        if (r.status) {
-          var msg = document.createElement("div");
-          msg.textContent = r.status;
-          Object.assign(msg.style, { color: pal.accent, font: "11px/1.4 " + SANS, padding: "2px 2px 0" });
-          card.appendChild(msg);
-        }
-      });
-    }
+    var fonts = fontspanel.create(pal, picker, { reserve: bar });
 
     // A plain line of text for a mode whose row 2 is just a status ("Passes
     // through (recording) · 41 entries"). Saves index.js hand-building a node.
@@ -590,14 +433,17 @@
       favPanel: favPanel,
       setFavouriteStatus: setFavouriteStatus,
       clearFavouriteInputs: function () { favNote.value = ""; favTags.value = ""; },
-      fontsPanel: fontsPanel,
-      setFontOptions: setFontOptions,
-      setFontSlots: setFontSlots,
-      setFontsStatus: setFontsStatus,
+      fontsPanel: fonts.el,
+      setFontOptions: fonts.setOptions,
+      setFontSlots: fonts.setSlots,
+      setFontsStatus: fonts.setStatus,
       refreshFontPicker: picker.refresh,
       closeFontPicker: picker.close,
-      onFontSlotChange: onFontSlotChange,
-      onFontSlotRemove: onFontSlotRemove,
+      onFontSlotChange: fonts.onPickFont,
+      onFontSlotRemove: fonts.onRemove,
+      onFontStyle: fonts.onStyle,
+      onFontClearStyles: fonts.onClearStyles,
+      onFontsReset: fonts.onReset,
       onChange: onChange,
       comparePanel: comparePanel,
       setCompareStatus: setCompareStatus,

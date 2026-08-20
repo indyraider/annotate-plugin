@@ -21,7 +21,7 @@ your context and nothing is fetched over the network.
 3. **Boot the overlay** — one call, no server, no pasted source:
    ```
    browser_run_code_unsafe({ code: `async (page) => {
-     const FILES = ["core.js","palette.js","fontpicker.js","ui.js","point.js","measure.js","study-motion.js","study.js","fonts.js","index.js"];
+     const FILES = ["core.js","palette.js","fontpicker.js","fontspanel.js","ui.js","point.js","measure.js","study-motion.js","study.js","fonts.js","index.js"];
      for (const f of FILES) await page.context().addInitScript({ path: "<this skill's directory>/overlay/" + f });
      try { await page.context().grantPermissions(["local-fonts"]); } catch (e) {}
      await page.reload({ waitUntil: "domcontentloaded" });
@@ -236,7 +236,7 @@ if you need a real answer for that element.
   mechanism as `browser_evaluate`, which Chromium does not subject to page CSP.
   ```
   browser_run_code_unsafe({ code: `async (page) => {
-    const FILES = ["core.js","palette.js","fontpicker.js","ui.js","point.js","measure.js","study-motion.js","study.js","fonts.js","index.js"];
+    const FILES = ["core.js","palette.js","fontpicker.js","fontspanel.js","ui.js","point.js","measure.js","study-motion.js","study.js","fonts.js","index.js"];
     for (const f of FILES) await page.context().addInitScript({ path: "<this skill's directory>/overlay/" + f });
     try { await page.context().grantPermissions(["local-fonts"]); } catch (e) {}
     await page.reload({ waitUntil: "domcontentloaded" });
@@ -449,10 +449,16 @@ a paragraph, retype both, and look at the actual product with the actual copy at
 sizes — which is the only place a pairing can honestly be judged.
 
 **This is the one mode that writes to the page it is pointed at.** Study's read-only promise
-is Study's, not the overlay's. Fonts writes **inline `font-family`/`font-weight` only**, on
-elements it matched, remembering each element's exact previous inline value — **Reset** puts
-every one of them back, and a page reload clears them too. It never touches anything else,
-and it skips our own chrome (`.__ann-ui`) so the toolbar cannot restyle itself.
+is Study's, not the overlay's. Fonts writes **nine inline properties and nothing else** —
+`font-family`, `font-weight`, `font-size`, `line-height`, `letter-spacing`, `word-spacing`,
+`text-transform`, `font-style`, `font-variant-caps` — on elements it matched, snapshotting each
+element's exact previous inline value and priority first. **Reset** puts every one of them
+back, and a page reload clears them too. It skips our own chrome (`.__ann-ui`) so the toolbar
+cannot restyle itself.
+
+That list is a single array in `fonts.js` (`TOUCHED`), and `overlay.test.cjs` asserts every
+property the mode writes appears in it. A property written but not snapshotted is a change
+that outlives Reset with nothing on screen to say so — the one promise this mode cannot break.
 
 **Driving it:**
 1. Click **Fonts** in the toolbar.
@@ -470,11 +476,25 @@ and it skips our own chrome (`.__ann-ui`) so the toolbar cannot restyle itself.
    Rows tagged `web` are fetched from Google the moment they scroll into view, one family at
    a time. The weight dropdown beside the button is `keep` by default, and **↺ puts the
    page's own font back** without removing the card.
-4. **Two cards is a pairing.** That is the shape to aim for: one for the headings, one for
+4. **Press `Type ▾` for the rest of the suite.** Case (Original / UPPER / lower / Title),
+   size, leading, tracking, word spacing, weight, italic, small caps. One card expands at a
+   time. Sliders act **while you drag** — that is the point — and each opens on the value the
+   element you clicked already has, so the first nudge is an adjustment rather than a jump.
+   `↺` beside a slider puts that one property back; **Reset type** puts the whole card's type
+   back while keeping the font you picked.
+5. **Two cards is a pairing.** That is the shape to aim for: one for the headings, one for
    the body, judged together on the real page.
-5. **Swaps stay applied when you leave the mode**, deliberately — judging a pairing means
+6. **Swaps stay applied when you leave the mode**, deliberately — judging a pairing means
    scrolling and clicking through the app with the new fonts on, which is impossible from
    inside a mode that owns every click. **Reset** clears them.
+
+**Size, leading and tracking are RELATIVE, and that is what makes them safe on a group.** A
+card covers every element in one font, and those elements are not the same size — this page's
+headings span 52px down to an 11px eyebrow. Writing one absolute size across them would
+flatten the hierarchy you are trying to judge. So leading is written unitless, tracking and
+word spacing in `em` (both already ratios of each element's own size), and **size is a
+multiplier applied per element against the size it had before the card touched it**. Drag the
+size slider twice and it scales from the page's own value both times; it never compounds.
 
 **From the agent side** — synchronous, nothing is sampled:
 ```
@@ -483,9 +503,12 @@ and it skips our own chrome (`.__ann-ui`) so the toolbar cannot restyle itself.
 ```
 { url, fontsAvailable, swaps: [{ from, to, weight, count, source, truncated }] }
 ```
-`from` is the family that was on the page, `to` the one Matt chose, `weight` is `null` when
-he left it on `keep`, and `source` is `"local"` or `"web"`. **`count` is the load-bearing
-field**: a swap that matched nothing and a swap that restyled 300 elements are
+Each swap carries `from`, `to`, and every typographic setting that was actually changed —
+`weight`, `sizeScale`, `lineHeight`, `tracking`, `wordSpacing`, `transform`, `italic`,
+`smallCaps` — with `null` meaning "left as the page had it". **`css` is the same settings as a
+ready-made declaration block**, so a decision can be pasted rather than retyped; its
+`font-size` is the anchor element's, while `sizeScale` is the part that generalises across the
+group. **`count` is the load-bearing field**: a swap that matched nothing and a swap that restyled 300 elements are
 indistinguishable without it, and only the second one is a decision. Feed the result into the
 promote step (Typography) exactly like a favourite — a pairing he liked on screen is
 inspiration, not yet a decision.

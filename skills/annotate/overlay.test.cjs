@@ -120,7 +120,7 @@ assert.ok(!/mode\s*[!=]==?\s*["']on["']/.test(uiSrc), "ui.js does not branch on 
 
 // The file-chooser ban and the mode-guard rule are overlay-wide invariants.
 // They are re-asserted per module so a future split cannot quietly drop them.
-for (const f of ["core.js", "palette.js", "fontpicker.js", "ui.js"]) {
+for (const f of ["core.js", "palette.js", "fontpicker.js", "fontspanel.js", "ui.js"]) {
   const src = fs.readFileSync(MOD(f), "utf8");
   assert.ok(!/\.type\s*=\s*["']file["']/.test(src), "no file input in " + f + " (its chooser jams the agent)");
 }
@@ -259,7 +259,7 @@ assert.deepStrictEqual(ownModuleFiles.slice().sort(), onDisk,
 // study.js requires study-motion.js, and index.js requires everything. The list
 // is consumed in order by the boot snippet, so its order is load-bearing.
 assert.deepStrictEqual(ownModuleFiles,
-  ["core.js", "palette.js", "fontpicker.js", "ui.js", "point.js", "measure.js", "study-motion.js", "study.js", "fonts.js", "index.js"],
+  ["core.js", "palette.js", "fontpicker.js", "fontspanel.js", "ui.js", "point.js", "measure.js", "study-motion.js", "study.js", "fonts.js", "index.js"],
   "OWN_MODULE_FILES is in dependency order — it is what the boot snippet iterates");
 
 // SKILL.md carries the same list in its boot snippet, and prose drifts. An
@@ -1303,8 +1303,22 @@ assert.ok(/closest\(["']\.__ann-ui["']\)/.test(fontsSrc), "fonts.js skips .__ann
 // 2. It must read the previous inline value BEFORE writing. Reset is the whole
 //    promise of this mode; a revert that writes "" instead of what was there
 //    silently deletes a style the page author wrote.
-assert.ok(/getPropertyValue\("font-family"\)/.test(fontsSrc), "fonts.js records the previous inline font-family");
-assert.ok(/getPropertyPriority\("font-family"\)/.test(fontsSrc), "fonts.js records the previous !important flag too — restoring the value without it is still a change");
+assert.ok(/getPropertyValue\(prop\)/.test(fontsSrc), "fonts.js records the previous inline value of every property it touches");
+assert.ok(/getPropertyPriority\(prop\)/.test(fontsSrc), "fonts.js records the previous !important flag too — restoring the value without it is still a change");
+
+// THE rule that keeps Reset honest as the suite grows. Every property written
+// has to be one the snapshot/restore loop covers; a property added to
+// declarationsFor and forgotten in TOUCHED is a change that outlives Reset, and
+// nothing on screen would ever say so. Checked by extracting both lists from the
+// source, so adding a tenth control cannot quietly break it.
+const touchedList = extractStringArray(fontsSrc, "TOUCHED");
+assert.ok(touchedList.length >= 9, "TOUCHED is parseable and covers the suite, got " + touchedList.length);
+const writtenProps = (fontsSrc.match(/out\["([a-z-]+)"\]\s*=/g) || []).map(function (s) { return /"([a-z-]+)"/.exec(s)[1]; });
+assert.ok(writtenProps.length >= 9, "declarationsFor writes the whole suite, got " + writtenProps.length);
+writtenProps.forEach(function (prop) {
+  assert.ok(touchedList.indexOf(prop) !== -1,
+    "every property fonts.js writes is one it snapshots and restores — '" + prop + "' is not in TOUCHED, so Reset would leave it behind");
+});
 
 // This assertion used to say the OPPOSITE — that queryLocalFonts must never be
 // called, because its permission prompt would have nobody to answer it. That was
@@ -1372,9 +1386,9 @@ function fakeStyle() {
     removeProperty: function (k) { delete this._v[k]; delete this._p[k]; }
   };
 }
-function fakeEl(name, computedFamily) {
+function fakeEl(name, computedFamily, sizePx) {
   return {
-    name: name, _family: computedFamily, style: fakeStyle(), _attrs: {},
+    name: name, _family: computedFamily, _size: (sizePx || 16) + "px", style: fakeStyle(), _attrs: {},
     closest: function () { return null; },
     setAttribute: function (k, v) { this._attrs[k] = v; },
     removeAttribute: function (k) { delete this._attrs[k]; },
@@ -1385,15 +1399,20 @@ function fakeEl(name, computedFamily) {
 function marked() { return DOM.filter(function (e) { return e.hasAttribute("data-ann-font-pick"); }).map(function (e) { return e.name; }); }
 
 const INSTALLED = ["Futura", "Inter"];
-const h1 = fakeEl("h1", "HeadingFont");
-const h2 = fakeEl("h2", "HeadingFont");
-const span = fakeEl("span", "Futura");
-const p = fakeEl("p", "BodyFont");
+// Deliberately DIFFERENT sizes in one group: an h1 at 48 and an h2 at 24 are the
+// case that decides whether the size control scales or flattens.
+const h1 = fakeEl("h1", "HeadingFont", 48);
+const h2 = fakeEl("h2", "HeadingFont", 24);
+const span = fakeEl("span", "Futura", 16);
+const p = fakeEl("p", "BodyFont", 17);
 // A page whose author already set an inline font-family, with !important. It is
 // still in the heading group (that IS its computed font), and it is the element
 // that proves revert restores rather than clears.
-const legacy = fakeEl("legacy", "HeadingFont");
+const legacy = fakeEl("legacy", "HeadingFont", 20);
 legacy.style.setProperty("font-family", '"HeadingFont", serif', "important");
+// Captured while the page is still pristine — the whole point is to compare
+// against what the author wrote, not against a state the tool already touched.
+const PRISTINE_LEGACY = JSON.stringify({ v: legacy.style._v, p: legacy.style._p });
 const DOM = [h1, h2, span, p, legacy];
 
 const docHandlers = {};
@@ -1424,7 +1443,12 @@ global.document = {
   }
 };
 global.getComputedStyle = function (el) {
-  return { fontFamily: el.style.getPropertyValue("font-family") || el._family };
+  return {
+    fontFamily: el.style.getPropertyValue("font-family") || el._family,
+    fontSize: el.style.getPropertyValue("font-size") || el._size,
+    lineHeight: el.style.getPropertyValue("line-height") || "normal",
+    letterSpacing: el.style.getPropertyValue("letter-spacing") || "normal"
+  };
 };
 global.location = { href: "https://example.com/pricing" };
 
@@ -1460,6 +1484,16 @@ assert.strictEqual(fm.slotCount(), 1, "clicking text creates one slot");
 // The complaint this came from: the highlight lasted exactly as long as the
 // cursor stayed on the element, so nothing showed which elements a card owned.
 assert.deepStrictEqual(marked().sort(), ["h1", "h2", "legacy"], "clicking outlines every element in that font, not just the one clicked");
+// The controls open on the element you CLICKED, not on whichever member of the
+// group happens to come first in the markup. This page's heading group spans
+// 48px, 24px and 20px — first-in-DOM would open the size control on an outlier.
+assert.strictEqual(fm.rows()[0].base.sizePx, 48, "the sliders are calibrated to the element that was clicked");
+// h1 is ALSO first in the fixture, so the assertion above passes either way and
+// proves nothing on its own. Clicking a later member is what separates "the one
+// you clicked" from "the one that came first".
+click(h2);
+assert.strictEqual(fm.rows()[0].base.sizePx, 24, "clicking a different member of the same group re-calibrates to THAT element");
+click(h1);
 assert.strictEqual(fm.rows()[0].label, "HeadingFont", "the slot is keyed on the font, not the element");
 assert.strictEqual(fm.rows()[0].detail, "3 elements", "the slot covers every element in that font (h1, h2 and the legacy one)");
 
@@ -1501,10 +1535,61 @@ assert.deepStrictEqual(
   "take() reports both halves of the pairing, with the element count that proves each one landed"
 );
 
+// ---- the whole typographic suite, applied and then undone -----------------
+//
+// The round trip is the test that matters. Every control writes a different CSS
+// property, and a property written but not restored is a change that outlives
+// Reset with nothing on screen to say so — so the check is not "did it revert
+// the ones I remembered to assert" but "is the inline style byte-identical to
+// what it was". A tenth control added without a matching TOUCHED entry fails
+// here, in the round trip, rather than on Matt's page a week later.
+const headingSlot = fm.rows()[0].id;
+fm.setFont(headingSlot, "Futura", "600");
+fm.setStyle(headingSlot, "transform", "uppercase");
+fm.setStyle(headingSlot, "sizeScale", 1.25);
+fm.setStyle(headingSlot, "lineHeight", 1.1);
+fm.setStyle(headingSlot, "tracking", 0.04);
+fm.setStyle(headingSlot, "wordSpacing", 0.02);
+fm.setStyle(headingSlot, "italic", true);
+fm.setStyle(headingSlot, "smallCaps", true);
+
+assert.strictEqual(h1.style.getPropertyValue("text-transform"), "uppercase", "case is applied");
+assert.strictEqual(h1.style.getPropertyValue("line-height"), "1.1", "leading is applied unitless, so it stays a ratio of each element's own size");
+assert.strictEqual(h1.style.getPropertyValue("letter-spacing"), "0.040em", "tracking is applied in em, so it scales with the type rather than fighting it");
+assert.strictEqual(h1.style.getPropertyValue("word-spacing"), "0.020em", "word spacing is applied");
+assert.strictEqual(h1.style.getPropertyValue("font-style"), "italic", "italic is applied");
+assert.strictEqual(h1.style.getPropertyValue("font-variant-caps"), "small-caps", "small caps is applied");
+assert.strictEqual(h1.style.getPropertyPriority("text-transform"), "important", "every declaration wins against the page's own stylesheet");
+
+// THE size case. A group spans several sizes; one absolute value would flatten
+// an h1 and an h2 into the same type and destroy the hierarchy being judged.
+assert.strictEqual(h1.style.getPropertyValue("font-size"), "60.00px", "48px scaled by 1.25");
+assert.strictEqual(h2.style.getPropertyValue("font-size"), "30.00px", "24px scaled by 1.25 — each element keeps its own relative size");
+
+// Dragging the slider again must scale from the ORIGINAL size, not from the one
+// just written. Compounding here is invisible until the value cannot be
+// recovered, and then the page is permanently wrong.
+fm.setStyle(headingSlot, "sizeScale", 1.5, true);
+assert.strictEqual(h1.style.getPropertyValue("font-size"), "72.00px", "a second drag scales from the page's own size, never from the last one written");
+fm.setStyle(headingSlot, "sizeScale", 1.5);
+assert.strictEqual(h1.style.getPropertyValue("font-size"), "72.00px", "and the slow path agrees with the live one");
+
+const suiteTake = fm.take().swaps[0];
+assert.strictEqual(suiteTake.transform, "uppercase", "take() reports the case");
+assert.strictEqual(suiteTake.sizeScale, 1.5, "take() reports the size scale, which is the part that generalises");
+assert.strictEqual(suiteTake.css["letter-spacing"], "0.040em", "take() hands back a CSS block that can be pasted rather than retyped");
+
+// Clearing one control leaves the others alone.
+fm.setStyle(headingSlot, "transform", null);
+assert.strictEqual(h1.style.getPropertyValue("text-transform"), "", "clearing case removes only that declaration");
+assert.strictEqual(h1.style.getPropertyValue("line-height"), "1.1", "and leaves the rest of the suite standing");
+
 // Reset must put the page back EXACTLY — including the inline value its author
 // wrote, priority and all. Clearing it instead would be a silent edit that
 // survives the tool being switched off.
 fm.reset();
+assert.strictEqual(JSON.stringify({ v: legacy.style._v, p: legacy.style._p }), PRISTINE_LEGACY,
+  "after the FULL suite and a reset, an element's inline style is byte-identical to what it was — every property written is a property restored");
 assert.strictEqual(fm.slotCount(), 0, "reset clears every slot");
 assert.strictEqual(h1.style.getPropertyValue("font-family"), "", "an element with no inline font before the swap has none after the reset");
 assert.strictEqual(h1.style.getPropertyValue("font-weight"), "", "the weight goes back too");

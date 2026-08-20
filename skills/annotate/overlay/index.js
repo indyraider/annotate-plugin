@@ -235,7 +235,13 @@
     // and knows nothing else; every decision about what that MEANS is here.
     uiHandles.onFontSlotChange(function (id, family, weight) { fontsMode.setFont(id, family, weight); });
     uiHandles.onFontSlotRemove(function (id) { fontsMode.removeSlot(id); });
-    uiHandles.onAct("fonts-reset", function () { fontsMode.reset(); });
+    uiHandles.onFontsReset(function () { fontsMode.reset(); });
+    // `live` is true while a slider is still under the cursor. It travels all
+    // the way down to fonts.js, which uses it to restyle the group it already
+    // knows instead of re-sweeping the document on every frame of a drag — and
+    // to stay quiet, so the panel is not rebuilt out from under the slider.
+    uiHandles.onFontStyle(function (id, key, value, live) { fontsMode.setStyle(id, key, value, live); });
+    uiHandles.onFontClearStyles(function (id) { fontsMode.clearStyles(id); });
 
     // Alt+A must be attached UNCONDITIONALLY, not inside point mode's enable()/
     // disable() bracket — mode is "off" (point mode disabled) at the exact

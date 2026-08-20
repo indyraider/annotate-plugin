@@ -2,3 +2,6 @@
 node_modules/
 *.log
 .toolbar-preview/
+
+# Playwright MCP scratch output (snapshots, console logs, screenshots)
+.playwright-mcp/

@@ -261,6 +261,12 @@
       for (var i = 0; i < slots.length; i++) if (slots[i].id === id) return slots[i];
       return null;
     }
+    // The slot's record for one element, if it has claimed it — which is the
+    // only place its pre-swap size still exists.
+    function ownedEntry(slot, el) {
+      for (var i = 0; i < slot.entries.length; i++) if (slot.entries[i].el === el) return slot.entries[i];
+      return null;
+    }
 
     // Every element whose CURRENT computed first family is `family`, minus our
     // own chrome and minus anything another slot has already claimed.
@@ -278,44 +284,101 @@
       return { els: out, truncated: truncated };
     }
 
-    function restore(el, prop, value, priority) {
-      if (value) el.style.setProperty(prop, value, priority);
-      else el.style.removeProperty(prop);
+    // Every property this mode is allowed to touch, in one list rather than a
+    // hand-written record/restore pair per property. Adding tracking used to
+    // mean editing four places and remembering all of them; a property missed
+    // in `revert` is a change that outlives Reset, which is the one promise this
+    // mode cannot break.
+    var TOUCHED = [
+      "font-family", "font-weight", "font-size", "line-height",
+      "letter-spacing", "word-spacing", "text-transform", "font-style", "font-variant-caps"
+    ];
+    function snapshot(el) {
+      var prev = {};
+      for (var i = 0; i < TOUCHED.length; i++) {
+        var prop = TOUCHED[i];
+        prev[prop] = { value: el.style.getPropertyValue(prop), priority: el.style.getPropertyPriority(prop) };
+      }
+      return prev;
+    }
+    function restoreAll(e) {
+      for (var i = 0; i < TOUCHED.length; i++) {
+        var prop = TOUCHED[i], was = e.prev[prop];
+        if (was && was.value) e.el.style.setProperty(prop, was.value, was.priority);
+        else e.el.style.removeProperty(prop);
+      }
     }
     function revert(slot) {
       slot.entries.forEach(function (e) {
-        restore(e.el, "font-family", e.family, e.familyPri);
-        restore(e.el, "font-weight", e.weight, e.weightPri);
+        restoreAll(e);
         owner["delete"](e.el);
       });
       slot.entries = [];
       slot.count = 0;
     }
 
-    // `to` null puts the slot back to the page's own font without removing the
-    // slot — the row stays so you can try the next candidate without re-clicking
-    // the element.
+    // What a slot's settings mean as CSS, for one element.
+    //
+    // Two of these are deliberately RELATIVE, because a group is not uniform: an
+    // h1 and an h2 in the same family have different sizes and leading, and
+    // writing one absolute value across both flattens the page's own hierarchy
+    // into a single size. `line-height` unitless and `letter-spacing`/
+    // `word-spacing` in em are already ratios of each element's own size, so they
+    // scale on their own. `font-size` is not — em resolves against the PARENT —
+    // so the scale is multiplied per element against the size it had before this
+    // slot touched it. `origPx` is read after revert(), so it is always the
+    // page's own size and never a previously-scaled one.
+    function declarationsFor(slot, origPx) {
+      var s = slot.styles, out = {};
+      if (slot.to) out["font-family"] = quoted(slot.to) + ", " + familyToken(slot.family);
+      if (s.weight && s.weight !== "keep") out["font-weight"] = s.weight;
+      if (s.sizeScale !== null && origPx) out["font-size"] = (origPx * s.sizeScale).toFixed(2) + "px";
+      if (s.lineHeight !== null) out["line-height"] = String(s.lineHeight);
+      if (s.tracking !== null) out["letter-spacing"] = s.tracking.toFixed(3) + "em";
+      if (s.wordSpacing !== null) out["word-spacing"] = s.wordSpacing.toFixed(3) + "em";
+      if (s.transform) out["text-transform"] = s.transform;
+      if (s.italic) out["font-style"] = "italic";
+      if (s.smallCaps) out["font-variant-caps"] = "small-caps";
+      return out;
+    }
+    // Has this slot been asked to change anything at all?
+    function isActive(slot) {
+      var s = slot.styles;
+      return !!(slot.to || (s.weight && s.weight !== "keep") || s.sizeScale !== null ||
+                s.lineHeight !== null || s.tracking !== null || s.wordSpacing !== null ||
+                s.transform || s.italic || s.smallCaps);
+    }
+    function blankStyles() {
+      return { weight: "keep", sizeScale: null, lineHeight: null, tracking: null,
+               wordSpacing: null, transform: null, italic: false, smallCaps: false };
+    }
+
+    // Reverting first is load-bearing, not tidiness: it is what makes the
+    // computed values read below the PAGE's own, rather than the ones this slot
+    // wrote a moment ago. Without it, dragging the size slider would compound —
+    // 1.1x of 1.1x of 1.1x — and the original size would be unrecoverable.
+    //
+    // A slot with nothing set still keeps its card: you are still working on that
+    // font, you have just put the page's own back while you look at it.
     function apply(slot) {
       revert(slot);
-      if (!slot.to) { slot.status = ""; if (notify) notify(); return; }
+      if (!isActive(slot)) { if (notify) notify(); if (focused === slot) focusSlot(slot); return; }
       var found = matching(slot.family, slot);
       slot.truncated = found.truncated;
-      // The page's ORIGINAL family is kept on the end of the stack, so a font
-      // that fails to load degrades back to what was there before rather than
-      // to the browser's default serif — a preview that silently turns the page
-      // into Times is worse than one that simply hasn't changed yet.
-      var stack = quoted(slot.to) + ", " + familyToken(slot.family);
       found.els.forEach(function (el) {
-        slot.entries.push({
-          el: el,
-          family: el.style.getPropertyValue("font-family"),
-          familyPri: el.style.getPropertyPriority("font-family"),
-          weight: el.style.getPropertyValue("font-weight"),
-          weightPri: el.style.getPropertyPriority("font-weight")
-        });
+        var cs = getComputedStyle(el);
+        var origPx = parseFloat(cs.fontSize) || 0;
+        var entry = { el: el, prev: snapshot(el), origPx: origPx };
+        slot.entries.push(entry);
         owner.set(el, slot);
-        el.style.setProperty("font-family", stack, "important");
-        if (slot.weight && slot.weight !== "keep") el.style.setProperty("font-weight", slot.weight, "important");
+        var decls = declarationsFor(slot, origPx);
+        for (var prop in decls) {
+          if (!Object.prototype.hasOwnProperty.call(decls, prop)) continue;
+          // !important throughout: the page's own stylesheet is usually more
+          // specific than an inline rule is strong, and a preview that loses to
+          // the site's CSS is not a preview.
+          el.style.setProperty(prop, decls[prop], "important");
+        }
       });
       slot.count = found.els.length;
       // The swap replaced the live match with a concrete element list, so the
@@ -331,7 +394,7 @@
       var slot = slotById(id);
       if (!slot) return;
       slot.to = to || null;
-      slot.weight = weight || "keep";
+      if (weight !== undefined) slot.styles.weight = weight || "keep";
       var entry = null;
       available().forEach(function (f) { if (f.name === to) entry = f; });
       slot.source = entry ? entry.source : "unknown";
@@ -347,6 +410,53 @@
         return;
       }
       slot.status = to && slot.source === "unknown" ? "⚠ " + to + " is not installed and is not in the web list — showing the fallback." : "";
+      apply(slot);
+    }
+
+    // Restyle a group this slot ALREADY owns, without re-sweeping the document.
+    //
+    // apply() has to walk every element on the page to find the group, which is
+    // fine once but ruinous sixty times a second while a slider is dragged — on
+    // a real site that is the whole DOM per frame. The group is already known
+    // here, and each entry carries the size it had before this slot touched it,
+    // so the drag costs O(group) and never O(page).
+    function restyle(slot) {
+      slot.entries.forEach(function (e) {
+        restoreAll(e);
+        var decls = declarationsFor(slot, e.origPx);
+        for (var prop in decls) {
+          if (!Object.prototype.hasOwnProperty.call(decls, prop)) continue;
+          e.el.style.setProperty(prop, decls[prop], "important");
+        }
+      });
+    }
+
+    // One setter for every typographic control. `null` means "leave the page's
+    // own alone" — which is NOT the same as a zero: tracking 0em is a real
+    // decision (set this to exactly none) and has to survive as one.
+    //
+    // `live` is a slider still under the cursor. It takes the fast path AND
+    // stays silent: notify() rebuilds the panel, which would tear the slider out
+    // of the DOM mid-drag and drop the pointer.
+    var NUMERIC = { sizeScale: 1, lineHeight: 1, tracking: 1, wordSpacing: 1 };
+    function setStyle(id, key, value, live) {
+      var slot = slotById(id);
+      if (!slot || !Object.prototype.hasOwnProperty.call(slot.styles, key)) return;
+      if (value === null || value === "") slot.styles[key] = (key === "weight") ? "keep" : null;
+      else if (NUMERIC[key]) slot.styles[key] = Number(value);
+      else if (key === "italic" || key === "smallCaps") slot.styles[key] = !!value;
+      else slot.styles[key] = value;
+      // The fast path only holds once the group has actually been claimed and
+      // the slot is still doing something; anything else needs the full sweep.
+      if (live && slot.entries.length && isActive(slot)) { restyle(slot); return; }
+      apply(slot);
+    }
+    // Back to the page's own type for this card, without losing the card or the
+    // font you had picked.
+    function clearStyles(id) {
+      var slot = slotById(id);
+      if (!slot) return;
+      slot.styles = blankStyles();
       apply(slot);
     }
 
@@ -370,12 +480,12 @@
     // second slot being created for the font we ourselves just applied.
     function pick(el) {
       var own = owner.get(el);
-      if (own) { focusSlot(own); return own; }
+      if (own) { own.anchor = el; focusSlot(own); return own; }
       var family = core.firstFamily(getComputedStyle(el).fontFamily);
       if (!family) return null;
-      for (var i = 0; i < slots.length; i++) if (slots[i].family === family) { focusSlot(slots[i]); return slots[i]; }
+      for (var i = 0; i < slots.length; i++) if (slots[i].family === family) { slots[i].anchor = el; focusSlot(slots[i]); return slots[i]; }
       var found = matching(family, null);
-      var slot = { id: nextId++, family: family, to: null, weight: "keep", count: found.els.length, truncated: found.truncated, source: null, status: "", entries: [] };
+      var slot = { id: nextId++, family: family, anchor: el, to: null, styles: blankStyles(), count: found.els.length, truncated: found.truncated, source: null, status: "", entries: [] };
       slots.push(slot);
       focusSlot(slot);
       return slot;
@@ -422,6 +532,36 @@
     }
 
     // Row data for ui.js — plain values only, no slot objects and no DOM.
+    // A slider has to start SOMEWHERE, and the honest place is where the page
+    // already is — otherwise every control begins at a value the page never had
+    // and the first nudge is a jump. Read off the first element in the group,
+    // whose entry (after apply) holds its pre-swap size.
+    function baseline(slot) {
+      // The element you CLICKED, not the first one in document order. A group is
+      // not uniform — this page's "Helvetica Neue" spans a 52px headline and an
+      // 11px eyebrow tracked at 0.14em — so first-in-DOM makes the sliders open
+      // on whichever outlier happens to appear earliest in the markup, which is
+      // rarely the thing you were looking at when you clicked.
+      // The anchor is valid from the moment you click, long before this slot has
+      // applied anything — so it must not be gated on having an entry. The entry
+      // is only consulted for the pre-swap SIZE, which is the one number the
+      // computed style can no longer answer once a scale has been written.
+      var el = slot.anchor;
+      if (el && el.isConnected === false) el = null;    // clicked, then re-rendered away
+      if (!el) el = slot.entries.length ? slot.entries[0].el : (matching(slot.family, slot).els[0] || null);
+      if (!el) return { sizePx: 16, lineHeight: 1.4, tracking: 0 };
+      var cs = getComputedStyle(el);
+      var entry = ownedEntry(slot, el);
+      var px = (entry ? entry.origPx : parseFloat(cs.fontSize)) || 16;
+      var lh = parseFloat(cs.lineHeight);
+      return {
+        sizePx: px,
+        // "normal" has no number; ~1.4 is the browser's own rough default and is
+        // a better starting handle than 0.
+        lineHeight: isNaN(lh) ? 1.4 : +(lh / (parseFloat(cs.fontSize) || px)).toFixed(2),
+        tracking: (parseFloat(cs.letterSpacing) || 0) / ((parseFloat(cs.fontSize) || px) || 1)
+      };
+    }
     function rows() {
       return slots.map(function (s) {
         return {
@@ -429,8 +569,13 @@
           label: s.family,
           detail: s.count + (s.truncated ? "+" : "") + " element" + (s.count === 1 ? "" : "s"),
           value: s.to || "",
-          weight: s.weight || "keep",
           weights: WEIGHTS,
+          styles: {
+            weight: s.styles.weight, sizeScale: s.styles.sizeScale, lineHeight: s.styles.lineHeight,
+            tracking: s.styles.tracking, wordSpacing: s.styles.wordSpacing,
+            transform: s.styles.transform, italic: s.styles.italic, smallCaps: s.styles.smallCaps
+          },
+          base: baseline(s),
           status: s.status || ""
         };
       });
@@ -447,8 +592,20 @@
         // Which path produced the list, so a report can say "449 fonts on this
         // Mac" or admit it only probed for 43 — those are different answers.
         fontsFrom: catalogueSource,
-        swaps: slots.filter(function (s) { return !!s.to; }).map(function (s) {
-          return { from: s.family, to: s.to, weight: s.weight === "keep" ? null : s.weight, count: s.count, source: s.source, truncated: !!s.truncated };
+        swaps: slots.filter(isActive).map(function (s) {
+          var css = declarationsFor(s, baseline(s).sizePx);
+          return {
+            from: s.family, to: s.to || null,
+            weight: s.styles.weight === "keep" ? null : s.styles.weight,
+            sizeScale: s.styles.sizeScale, lineHeight: s.styles.lineHeight,
+            tracking: s.styles.tracking, wordSpacing: s.styles.wordSpacing,
+            transform: s.styles.transform, italic: s.styles.italic, smallCaps: s.styles.smallCaps,
+            // The same settings as a CSS block, so the decision can be pasted
+            // rather than retyped. font-size is the FIRST element's — a group
+            // spans several sizes, and the scale is what actually generalises.
+            css: css,
+            count: s.count, source: s.source, truncated: !!s.truncated
+          };
         })
       };
     }
@@ -465,7 +622,8 @@
 
     return {
       enable: enable, disable: disable, available: available, rows: rows,
-      setFont: setFont, removeSlot: removeSlot, reset: reset, take: take,
+      setFont: setFont, setStyle: setStyle, clearStyles: clearStyles,
+      removeSlot: removeSlot, reset: reset, take: take,
       preloadPreview: preloadPreview, loadSystemFonts: loadSystemFonts, catalogueNote: catalogueNote,
       slotCount: function () { return slots.length; }
     };

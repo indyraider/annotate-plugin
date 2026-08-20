@@ -330,7 +330,7 @@
   // alone must never disqualify a resource — only when it also shares the boot
   // origin. No boot base -> always false: an unknown boot origin must never
   // start excluding real site resources.
-  var OWN_MODULE_FILES = ["core.js", "palette.js", "fontpicker.js", "ui.js", "point.js", "measure.js", "study-motion.js", "study.js", "fonts.js", "index.js"];
+  var OWN_MODULE_FILES = ["core.js", "palette.js", "fontpicker.js", "fontspanel.js", "ui.js", "point.js", "measure.js", "study-motion.js", "study.js", "fonts.js", "index.js"];
   function isOwnModuleUrl(url, bootBase) {
     if (!bootBase || !url) return false;
     var u = String(url), base = String(bootBase);
