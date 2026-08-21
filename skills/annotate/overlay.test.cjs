@@ -1436,6 +1436,30 @@ assert.ok(/requestSystemFonts/.test(fontsCode), "the permission can be requested
 assert.ok(/onGrant/.test(fpSrc) && /data-ann-fp-grant/.test(fpSrc), "and the picker gives that request a button");
 assert.ok(/onGrantFonts/.test(indexSrc), "index.js wires the button to the mode");
 
+// THE caller-side half of the rule above, and the actual regression. A one-shot
+// bootstrap must not be invoked from the repaint function, because its callback
+// IS the repaint: updateToolbar -> loadSystemFonts -> onDone -> updateToolbar,
+// forever, and the overlay dies on stack exhaustion the moment Fonts is opened.
+// Checked by carving updateToolbar out of the source rather than by grepping the
+// whole file, since the legitimate call site sits a few lines below it.
+const updateToolbarBody = /function updateToolbar\(\) \{([\s\S]*?)\n    \}/.exec(indexSrc);
+assert.ok(updateToolbarBody, "updateToolbar is parseable");
+["loadSystemFonts", "refreshPermission"].forEach(function (oneShot) {
+  assert.ok(updateToolbarBody[1].indexOf(oneShot) === -1,
+    oneShot + "() must not be called from updateToolbar — its callback repaints, and the repaint would call it again");
+});
+assert.ok(/if \(next === "fonts"\) \{[\s\S]{0,400}?loadSystemFonts/.test(indexSrc),
+  "it runs on entering the mode instead, where the callback leads nowhere back");
+
+// Enumeration is one-shot AND flaky — the same page gave 82 on one run and 488
+// on the next with the permission granted both times — so a lost race would
+// otherwise strand the curated list for the whole page. The retry must be gated
+// on BOTH the permission being granted and the list still being short: either
+// alone would re-ask on every mode entry for a machine that will never answer,
+// and both go false the moment it succeeds, so it cannot spin.
+assert.ok(/accessState\(\) === "granted" && [\s\S]{0,120}?fontsFrom !== "system"/.test(indexSrc),
+  "the retry is gated on a granted permission AND a still-short list");
+
 // THE constraint that makes the button work at all. Chrome shows the permission
 // prompt only while the user activation from the click is still live, and a
 // single `await` before queryLocalFonts() spends it — so the path from the click
@@ -1443,7 +1467,7 @@ assert.ok(/onGrantFonts/.test(indexSrc), "index.js wires the button to the mode"
 // is invisible: the prompt simply never appears and the list stays short.
 const grantPath = /if \(state\.onGrant\) state\.onGrant\(\);/.test(fpSrc);
 assert.ok(grantPath, "the picker calls the grant handler straight from the click handler");
-const loadBody = /function loadSystemFonts\(onDone\) \{([\s\S]*?)\n  \}/.exec(fontsCode);
+const loadBody = /function loadSystemFonts\(onDone[^)]*\) \{([\s\S]*?)\n  \}/.exec(fontsCode);
 assert.ok(loadBody, "loadSystemFonts is parseable");
 assert.ok(!/\bawait\b/.test(loadBody[1]), "no await between the click and queryLocalFonts() — it would spend the user activation the prompt needs");
 
@@ -1754,6 +1778,20 @@ const fontAccessCheck = (async function () {
   assert.strictEqual(secondCall, "called back", "a repeat call still calls back, even though it does no work");
   assert.strictEqual(queryCalls, 1, "and it does not re-ask the browser — the guard is still doing its job");
 
+  // Because that callback fires on the no-op path too, ANY caller whose callback
+  // leads back here recurses without bound. It happened: index.js called this
+  // from updateToolbar with updateToolbar as the callback, so opening Fonts died
+  // instantly on "Maximum call stack size exceeded" — the overlay simply
+  // vanished. The bootstrap now runs on mode ENTRY instead, and the two
+  // assertions below pin both halves of that: the shape of the contract here,
+  // and the one caller that must not violate it.
+  let reentry = 0;
+  gate.loadSystemFonts(function reenter() {
+    if (++reentry > 50) throw new Error("runaway re-entry");
+    if (reentry < 3) gate.loadSystemFonts(reenter);   // exactly what updateToolbar did
+  });
+  assert.ok(reentry < 50, "a caller can re-enter without the stack unwinding into the ground");
+
   // The message has to name the cause, and offer the fix when there is one.
   const refusedNote = gate.catalogueNote();
   assert.ok(refusedNote && refusedNote.ask, "a refusable state offers a way to ask");
@@ -1767,9 +1805,42 @@ const fontAccessCheck = (async function () {
   await new Promise(function (r) { gate.requestSystemFonts(r); });
   assert.strictEqual(queryCalls, 2, "the button really re-asks — the one-shot guard is re-armed, not bypassed by luck");
   assert.strictEqual(gate.take().fontsFrom, "system", "and the list becomes the real one");
+
   assert.ok(gate.available().some(function (f) { return f.name === "GarageGothic-Bold" && f.source === "local"; }),
     "the fonts that were missing are now present, marked as installed");
   assert.strictEqual(gate.catalogueNote(), null, "and the note goes away rather than lingering over a list that is now complete");
+  // A result that arrives AFTER the ceiling still counts. This is the bug that
+  // produced "the fonts keep disappearing": the first queryLocalFonts() on a
+  // page is cold — Chrome walks the whole font library off disk, measured at 3-4
+  // SECONDS for 2517 faces, while every later call is cached at ~2ms. The old
+  // 4s ceiling sat exactly on that boundary, and losing the race discarded a
+  // perfectly good answer for the rest of the page's life. Same code, same
+  // machine, opposite outcomes.
+  let releaseSlow = null;
+  winStub.queryLocalFonts = function () {
+    queryCalls++;
+    return new Promise(function (resolve) { releaseSlow = function () { resolve([{ family: "Cold Read Face" }]); }; });
+  };
+  // A 5ms ceiling with the answer held back well past it: the ceiling fires
+  // FIRST and the real library turns up late — precisely the cold-read shape,
+  // compressed so it can be tested in milliseconds instead of seconds.
+  let repaints = 0;
+  gate.requestSystemFonts(function () { repaints++; }, 5);
+  await new Promise(function (r) { setTimeout(r, 60); });
+  // The ceiling has fired and nothing has come back yet. It reports that it is
+  // still reading — NOT that anything was refused, which is the distinction the
+  // whole diagnosis rests on. The list already in hand is deliberately left
+  // alone: a slow refresh must not tear down a good catalogue.
+  assert.ok(/still reading/.test(gate.take().fontError || ""),
+    "a ceiling that fires says it is still reading, rather than blaming a refusal, got: " + JSON.stringify(gate.take().fontError));
+
+  releaseSlow();
+  await new Promise(function (r) { setTimeout(r, 40); });
+  assert.ok(gate.available().some(function (f) { return f.name === "Cold Read Face"; }),
+    "the late answer still lands — the ceiling decides when to stop WAITING, never whether the answer counts");
+  assert.strictEqual(gate.take().fontsFrom, "system", "and the catalogue is upgraded even though it arrived after the deadline");
+  assert.strictEqual(gate.take().fontError, null, "the earlier 'still reading' note is cleared, not left contradicting a full list");
+  assert.ok(repaints >= 2, "the UI is told twice — once when the wait ends, once when the fonts actually arrive");
 
   // Each cause reads differently, because each needs a different answer from Matt.
   winStub.isSecureContext = false;

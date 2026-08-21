@@ -124,6 +124,12 @@
   // neither the cause nor anything to do about it — and the four causes below
   // need four different answers.
   var permissionState = "unknown";
+  // Why the last enumeration attempt did not produce a list. It used to be
+  // discarded — every failure path funnelled into finish(null) — which made the
+  // difference between "refused", "timed out" and "never ran" invisible from
+  // outside, including to whoever was trying to work out why the picker was
+  // short. A swallowed error is a bug you cannot be told about.
+  var lastEnumError = null;
   // Resolved on EVERY use, not captured at load. A bare `window` mention is a
   // ReferenceError in Node (where the self-check runs this), so it has to be
   // guarded — but capturing it once at load time bound the answer to whenever
@@ -179,35 +185,65 @@
   // Every failure path lands on the probe list rather than on an error: denied
   // permission rejects, an older browser has no such function, and a prompt
   // nobody answers never settles at all — which is what the ceiling is for.
-  var ENUM_CEILING_MS = 4000;
+  // The FIRST queryLocalFonts() on a page is cold: Chrome walks the machine's
+  // whole font library off disk, which on 2517 faces measured 3-4 SECONDS.
+  // Every call after it is served from cache in about 2ms — which is exactly why
+  // this was so hard to see, since any probe run by hand afterwards looked
+  // instant and fine.
+  //
+  // The old ceiling was 4000ms, sitting right on that boundary: win the race and
+  // the picker showed 488 fonts, lose it and the result was discarded and the
+  // curated 82 stuck for the rest of the page. Same code, same machine, opposite
+  // outcomes — the "fonts keep disappearing" report.
+  //
+  // Raised well clear of a cold read, and, more importantly, a late answer is no
+  // longer thrown away (see applyNames): the ceiling now only decides when to
+  // stop WAITING, never whether the result counts.
+  var ENUM_CEILING_MS = 20000;
   // MUST stay synchronous from its caller down to queryLocalFonts() when it is
   // reached from a click: Chrome only shows the permission prompt while the user
   // activation from that click is still live, and a single `await` before the
   // call spends it. That is why the permission state is not consulted here.
-  function loadSystemFonts(onDone) {
+  // `ceilingMs` is a real parameter, not a test backdoor: the wait before giving
+  // up is a property of the call, and production simply takes the default. It
+  // exists because the behaviour that matters here — a late answer still
+  // counting — is untestable if the only way to reach it is to wait 20 seconds.
+  function loadSystemFonts(onDone, ceilingMs) {
     // Both early exits MUST still call back. A caller that wraps this in a
     // promise waits for ever otherwise, and "waits for ever" in Node is a silent
     // exit with status 0 — a test that does not run and does not say so.
     if (enumState !== "idle") { if (onDone) onDone(); return; }
     if (!W() || typeof W().queryLocalFonts !== "function") {
       enumState = "done";
+      lastEnumError = "queryLocalFonts is not available on this page";
       if (onDone) onDone();
       return;
     }
     enumState = "running";
+    // Upgrading the catalogue and giving up waiting are now two different
+    // things. A result that arrives after the ceiling is still a good result —
+    // discarding it is what made a slow machine look like a refusing one.
     var settled = false;
-    var finish = function (names) {
-      if (settled) return;
+    var applyNames = function (names) {
+      if (!names || !names.length) return false;
+      catalogue = buildCatalogue(names);
+      catalogueSource = "system";
+      lastEnumError = null;
+      return true;
+    };
+    var finish = function (names, why) {
+      var upgraded = applyNames(names);
+      // The ceiling may already have reported; a late success still repaints.
+      if (settled && !upgraded) return;
       settled = true;
       clearTimeout(ceiling);
       enumState = "done";
-      if (names && names.length) {
-        catalogue = buildCatalogue(names);
-        catalogueSource = "system";
-      }
+      if (!upgraded) lastEnumError = why || "no fonts returned";
       if (onDone) onDone();
     };
-    var ceiling = setTimeout(function () { finish(null); }, ENUM_CEILING_MS);
+    var ceiling = setTimeout(function () {
+      finish(null, "still reading the font library after " + ((ceilingMs || ENUM_CEILING_MS) / 1000) + "s");
+    }, ceilingMs || ENUM_CEILING_MS);
     try {
       W().queryLocalFonts().then(function (faces) {
         var names = [], seen = {};
@@ -216,8 +252,8 @@
           if (n && !seen[n]) { seen[n] = true; names.push(n); }
         }
         finish(names);
-      })["catch"](function () { finish(null); });
-    } catch (e) { finish(null); }
+      })["catch"](function (e) { finish(null, (e && e.name ? e.name + ": " : "") + (e && e.message ? e.message : String(e))); });
+    } catch (e) { finish(null, "threw synchronously: " + (e && e.message ? e.message : String(e))); }
   }
 
   // ---- loading a web font on demand ----------------------------------------
@@ -652,6 +688,8 @@
         // Carried here so a session that cannot see the picker can still say
         // what is wrong.
         fontAccess: accessState(),
+        // Null when the real list loaded. Otherwise the actual reason, verbatim.
+        fontError: lastEnumError,
         swaps: slots.filter(isActive).map(function (s) {
           var css = declarationsFor(s, baseline(s).sizePx);
           return {
@@ -688,7 +726,7 @@
       accessState: accessState, refreshPermission: refreshPermission,
       // The gesture path. Re-arms the one-shot guard and goes straight at
       // queryLocalFonts, so a prompt actually appears for Matt to answer.
-      requestSystemFonts: function (onDone) { enumState = "idle"; loadSystemFonts(function () { refreshPermission(onDone); }); },
+      requestSystemFonts: function (onDone, ceilingMs) { enumState = "idle"; loadSystemFonts(function () { refreshPermission(onDone); }, ceilingMs); },
       slotCount: function () { return slots.length; }
     };
   }

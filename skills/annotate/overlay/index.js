@@ -75,6 +75,17 @@
     // itself is core.nextMode — pure, and tested in Node rather than grepped for.
     var CYCLE_KEYS = MODES.filter(function (m) { return !m.disabled; }).map(function (m) { return m.key; });
 
+    // Whether the one-shot system-font enumeration has already been asked for.
+    // MUST be checked here rather than relying on loadSystemFonts' own guard:
+    // that guard returns by calling onDone SYNCHRONOUSLY, and onDone below
+    // repaints, and the repaint calls loadSystemFonts again — which after the
+    // first call always takes the guarded path, so it recurses until the stack
+    // dies. Measured 20 Aug: entering Fonts mode threw "Maximum call stack size
+    // exceeded" every time, through fonts.js -> updateToolbar -> fonts.js.
+    // The callback is only worth a repaint when the list actually ARRIVES, and
+    // that happens exactly once.
+    var systemFontsRequested = false;
+
     function updateToolbar() {
       var m = state.mode, c = window.__annotations.length;
       uiHandles.setActiveMode(m);
@@ -109,14 +120,6 @@
           // nothing on screen changes, so every web font looks unavailable.
           fontsMode.preloadPreview(name, function () { uiHandles.refreshFontPicker(); });
         }, fontsMode.catalogueNote());
-        // Reading the real system font list is asynchronous and runs once; until
-        // it lands the picker shows the probed fallback. Guarded inside, so
-        // calling it on every repaint costs nothing after the first.
-        fontsMode.loadSystemFonts(function () { updateToolbar(); });
-        // The note has to name the real reason, and the reason lives in the
-        // permission layer. Asked once per mode entry, asynchronously — it only
-        // affects the wording, never whether the list loads.
-        fontsMode.refreshPermission(function () { uiHandles.refreshFontPicker(); });
         uiHandles.setModeTools(uiHandles.fontsPanel);
         uiHandles.setFontSlots(fontsMode.rows());
         // One sentence, and only the one that is true right now. The first
@@ -146,6 +149,44 @@
       if (next === "study") studyMode.enable(); else studyMode.disable();
       if (next === "fonts") fontsMode.enable(); else { fontsMode.disable(); uiHandles.closeFontPicker(); }
       updateToolbar();
+      // ---- one-shot work, on ENTERING the mode, never from updateToolbar ----
+      //
+      // These two used to live in updateToolbar's fonts branch, and that was
+      // always wrong — a bootstrap does not belong in a repaint. It was merely
+      // invisible while loadSystemFonts returned silently on its second call.
+      // The moment that early return started calling its callback (so a caller
+      // awaiting it could not hang), the pair became: updateToolbar ->
+      // loadSystemFonts -> onDone -> updateToolbar -> ... and the overlay died
+      // on "Maximum call stack size exceeded" the instant Fonts was opened.
+      //
+      // Called from here, the callback repaints and the repaint calls nothing
+      // back. That is the property that makes the loop impossible, rather than
+      // merely unlikely.
+      if (next === "fonts") {
+        if (!systemFontsRequested) {
+          systemFontsRequested = true;
+          fontsMode.loadSystemFonts(function () { updateToolbar(); });
+        }
+        fontsMode.refreshPermission(function () {
+          updateToolbar();
+          uiHandles.refreshFontPicker();
+          // Enumeration is one-shot, and it is FLAKY: the same page gave the
+          // curated 82 on one run and the real 488 on the next, with the
+          // permission granted both times. One-shot plus flaky means a single
+          // lost race leaves the short list in place for the rest of the page's
+          // life, on a machine that was perfectly willing to answer — and it
+          // looks exactly like a genuine refusal.
+          //
+          // So: retried, but only on ENTERING the mode, only when the browser
+          // says the permission really is granted, and only while the list is
+          // still the short one. Every one of those conditions goes false the
+          // moment it works, so it cannot spin — and none of them is true for a
+          // machine that will never answer, so that case is not re-asked either.
+          if (fontsMode.accessState() === "granted" && fontsMode.take().fontsFrom !== "system") {
+            fontsMode.requestSystemFonts(function () { updateToolbar(); uiHandles.refreshFontPicker(); });
+          }
+        });
+      }
     }
     // Clicking the mode you are already in leaves it. Without this, "off" is
     // only reachable by cycling all the way round with Alt+A, and off is the
