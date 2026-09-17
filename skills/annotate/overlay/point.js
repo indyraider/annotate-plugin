@@ -176,7 +176,27 @@
     function openComment(el, x, y, shot) {
       closeComment(); target = el; pendingShot = shot || null;
       box = document.createElement("div"); box.className = "__ann-ui";
-      Object.assign(box.style, { position: "fixed", left: Math.min(x, window.innerWidth - 260) + "px", top: Math.min(y, window.innerHeight - 150) + "px", zIndex: Z, width: "244px", background: pal.elevated, border: "1px solid " + pal.border, borderRadius: "8px", padding: "8px", boxShadow: "0 10px 34px rgba(0,0,0,.42)", font: "12px " + SANS, color: pal.text });
+      Object.assign(box.style, { position: "fixed", left: Math.min(x, window.innerWidth - 260) + "px", top: Math.min(y, window.innerHeight - 180) + "px", zIndex: Z, width: "244px", background: pal.elevated, border: "1px solid " + pal.border, borderRadius: "8px", padding: "8px", boxShadow: "0 10px 34px rgba(0,0,0,.42)", font: "12px " + SANS, color: pal.text });
+      // ---- walk the tree: the click landed on a <span>, the comment is about the card ----
+      var trail = [];                                // elements walked up from, nearest last
+      var walk = document.createElement("div");
+      Object.assign(walk.style, { display: "flex", alignItems: "center", gap: "4px", marginBottom: "6px" });
+      var where = document.createElement("span");
+      Object.assign(where.style, { flex: "1", minWidth: "0", font: "11px " + SANS, color: pal.text2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" });
+      var upBtn = btn("↑", false), downBtn = btn("↓", false);
+      upBtn.title = "Parent element (Alt+↑)"; downBtn.title = "Back down (Alt+↓)";
+      upBtn.style.padding = "2px 7px"; downBtn.style.padding = "2px 7px";
+      function parentOf(n) { var p = n.parentElement; return p && p !== document.documentElement ? p : null; }
+      function paintWhere() {
+        var cls = (typeof target.className === "string" && target.className.trim()) ? "." + target.className.trim().split(/\s+/).slice(0, 2).join(".") : "";
+        where.textContent = target.tagName.toLowerCase() + cls;
+        upBtn.disabled = !parentOf(target); downBtn.disabled = !trail.length;
+        ui.showHighlight(target);
+      }
+      function walkUp() { var p = parentOf(target); if (!p) return; trail.push(target); target = p; paintWhere(); }
+      function walkDown() { if (!trail.length) return; target = trail.pop(); paintWhere(); }
+      upBtn.onclick = walkUp; downBtn.onclick = walkDown;
+      walk.append(where, upBtn, downBtn);
       var ta = document.createElement("textarea"); ta.placeholder = "What should change here?  (⌘/Ctrl+Enter to save)";
       Object.assign(ta.style, { width: "100%", height: "66px", resize: "none", background: pal.surface, color: pal.text, border: "1px solid " + pal.border, borderRadius: "6px", padding: "6px", font: "12px " + SANS, boxSizing: "border-box", outline: "none" });
       ta.addEventListener("focus", function () { ta.style.borderColor = pal.accent; });
@@ -242,9 +262,13 @@
       var cancel = btn("Cancel", false), saveBtn = btn("Save", true);
       var submit = function () { var v = ta.value.trim(); if (v) record(target, v, pendingImage, pendingShot); closeComment(); };
       cancel.onclick = closeComment; saveBtn.onclick = submit;
-      ta.addEventListener("keydown", function (e) { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); submit(); } });
+      ta.addEventListener("keydown", function (e) {
+        if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); submit(); }
+        else if (e.altKey && e.key === "ArrowUp") { e.preventDefault(); walkUp(); }
+        else if (e.altKey && e.key === "ArrowDown") { e.preventDefault(); walkDown(); }
+      });
       row.append(hint, cancel, saveBtn);
-      box.append(ta, thumbWrap, row); document.body.appendChild(box); ta.focus();
+      box.append(walk, ta, thumbWrap, row); document.body.appendChild(box); paintWhere(); ta.focus();
     }
     function closeComment() { if (box) { box.remove(); box = null; target = null; pendingImage = null; } pendingShot = null; }
 
@@ -284,7 +308,9 @@
     function onMousemove(e) {
       if (state.mode !== "on") return;
       if (e.shiftKey || ui.isOurs(e.target)) { ui.hideHighlight(); ui.hideInspector(); return; }
-      if (box) { ui.showHighlight(e.target); ui.hideInspector(); return; }  // keep tracking, don't cover the open comment box
+      // While the box is open the ring marks what the comment is ABOUT, which the
+      // tree walk can move. Following the mouse would point it at the wrong thing.
+      if (box) { ui.hideInspector(); return; }
       ui.showHighlight(e.target);
       ui.showInspector(e.target, e.clientX, e.clientY);
     }

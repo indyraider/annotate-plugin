@@ -2026,6 +2026,16 @@ assert.strictEqual(core.firstAppFrame(null), null, "endpoint returned nothing ->
     "both boot snippets in SKILL.md register the screenshot binding");
 }
 
+// ---- Phase 3: tree walk ----
+// The click lands on a <span>; the comment is about the card. ↑ in the box moves
+// the target to the parent. The highlight follows the TARGET while the box is
+// open, not the mouse, or the ring stops showing what the comment is about.
+{
+  const src = codeOf(fs.readFileSync(MOD("point.js"), "utf8"));
+  assert.ok(/e\.altKey && e\.key === "ArrowUp"/.test(src) && /e\.altKey && e\.key === "ArrowDown"/.test(src), "Alt+↑/↓ walk the target from the comment box");
+  assert.ok(/if \(box\) \{ ui\.hideInspector\(\); return; \}/.test(src), "while the box is open, mousemove no longer moves the highlight off the target");
+}
+
 Promise.all([
   // Raced against a deadline, because the failure this suite hit for real was a
   // promise that NEVER settled: Node then exits 0 with no output, and a test

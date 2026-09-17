@@ -95,6 +95,12 @@ check("the screenshot is taken at click time, before the comment box exists", as
   assert.ok(px[0] > 200 && px[1] < 60 && px[2] < 60, "the transient red square is in the shot, pixel " + px);
 });
 
+check("Alt+↑ in the comment box moves the comment to the parent element", async (page) => {
+  const a = await comment(page, INPUT, "gate: walk", { beforeType: () => page.keyboard.press("Alt+ArrowUp") });
+  const ok = await page.evaluate(({ sel, input }) => document.querySelector(sel) === document.querySelector(input).parentElement, { sel: a.selector, input: INPUT });
+  assert.ok(ok, "saved selector is the input's parent: " + a.selector);
+});
+
 // ---- checks end ----
 
 (async () => {
