@@ -547,6 +547,55 @@
   // rejected: everything that inherited the page default really is one font,
   // and on a lightly-styled page that is the group you most want to click.
   var FIRST_FAMILY_RE = /^\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^,]*)/;
+  // ---- Phase 3: element -> source on React 19 ----
+  //
+  // React 19 removed fiber._debugSource, so Point's source lookup returned null
+  // on every comment. What React 19 keeps is fiber._debugStack, an Error whose
+  // third line is the compiled JSX call site. Next's dev server maps a compiled
+  // site back to a file through the endpoint its own error overlay uses. These
+  // four helpers are the pure half of that; point.js does the fetching.
+
+  // Pure: the JSX call site off a _debugStack string, in the frame shape Next's
+  // endpoint takes. Line 2, because 0 is React's marker and 1 is React's own
+  // JSX helper.
+  function parseDebugStack(stack) {
+    var line = String(stack || "").split("\n")[2];
+    if (!line) return null;
+    var m = /^at (?:(\S+) \()?(.+?):(\d+):(\d+)\)?$/.exec(line.trim());
+    if (!m) return null;
+    return { file: m[2], line1: Number(m[3]), column1: Number(m[4]), methodName: m[1] || "", arguments: [] };
+  }
+
+  // Pure: Next's build directory, read off a server component's frame. Nothing
+  // else on the page says where it is, and client frames need it (below).
+  function nextDistDir(file) {
+    var m = /^about:\/\/React\/Server\/file:\/\/(\/.+?)\/server\//.exec(String(file || ""));
+    return m ? decodeURIComponent(m[1]) : null;
+  }
+
+  // Pure: a client chunk URL rewritten into the dist dir, the way Next's own
+  // parseStack does it server-side. Sent as an http URL the endpoint answers
+  // "Unknown url scheme 'http'". Percent-decoded: measured, %40 fails and @ works.
+  function toNextFrameFile(file, distDir) {
+    var s = String(file || "");
+    var m = /^https?:\/\/[^/]+\/_next(\/static\/[^?#]+)/.exec(s);
+    if (!m || !distDir) return s;
+    return "file://" + distDir + decodeURIComponent(m[1]);
+  }
+
+  // Pure: the nearest frame in the app's own code. Results arrive in walk order
+  // (the element first, then its ancestors), and the element itself is usually
+  // a library component whose file is useless to the person fixing the page.
+  function firstAppFrame(results) {
+    var list = results || [];
+    for (var i = 0; i < list.length; i++) {
+      var r = list[i];
+      var f = r && r.status === "fulfilled" && r.value && r.value.originalStackFrame;
+      if (f && f.file && !/(^|\/)node_modules\//.test(f.file)) return { file: f.file, line: f.line1, column: f.column1 };
+    }
+    return null;
+  }
+
   function firstFamily(value) {
     if (!value) return "";
     var m = FIRST_FAMILY_RE.exec(String(value));
@@ -568,5 +617,7 @@
     isAbsentValue: isAbsentValue, nextMode: nextMode, firstFamily: firstFamily,
     normalisePath: normalisePath, entryKey: entryKey, entryMetric: entryMetric,
     summariseRun: summariseRun, compareRuns: compareRuns,
+    parseDebugStack: parseDebugStack, nextDistDir: nextDistDir,
+    toNextFrameFile: toNextFrameFile, firstAppFrame: firstAppFrame,
   };
 });

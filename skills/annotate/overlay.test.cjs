@@ -1928,6 +1928,67 @@ assert.ok(/list\.style\.maxHeight[\s\S]{0,200}?var h = pop\.offsetHeight/.test(f
   "maxHeight is clamped BEFORE offsetHeight is read — measuring first gives the unclamped height and the popover lands too high");
 
 
+// ---- Phase 3: element -> source on React 19 --------------------------------
+// React 19 removed fiber._debugSource. These stacks are the real shapes read off
+// fibers on the Tideswell /login page (React 19.2.4, Next 16.3 Turbopack dev),
+// 2026-09-17. Line 0 is React's marker, line 1 is React's own JSX helper, line 2
+// is the component that wrote the JSX — the only line worth sending.
+const SERVER_STACK = [
+  "Error: react-stack-top-frame",
+  "    at fakeJSXCallSite (http://localhost:3000/_next/static/chunks/0l4__next_dist_compiled_react-server-dom-turbopack_14crl3y._.js:2002:21)",
+  "    at LoginPage (about://React/Server/file:///Users/mattjones/Documents/brandscout-enterprise/.next/dev/server/chunks/ssr/%5Broot-of-the-server%5D__0bcc7cb._.js?10:120:497)",
+  "    at Object.react_stack_bottom_frame (http://localhost:3000/_next/static/chunks/0l4__next_dist_compiled_react-server-dom-turbopack_14crl3y._.js:2769:93)"
+].join("\n");
+const CLIENT_STACK = [
+  "Error: react-stack-top-frame",
+  "    at exports.jsx (http://localhost:3000/_next/static/chunks/0l4__next_dist_compiled_1yan1u3._.js:1151:33)",
+  "    at InnerLayoutRouter (http://localhost:3000/_next/static/chunks/node_modules__pnpm_0w17uau._.js:1208:50)",
+  "    at Object.react_stack_bottom_frame (http://localhost:3000/_next/static/chunks/0l4__next_dist_compiled_react-dom_1pmu1hc._.js:14895:24)"
+].join("\n");
+
+assert.deepStrictEqual(core.parseDebugStack(SERVER_STACK), {
+  file: "about://React/Server/file:///Users/mattjones/Documents/brandscout-enterprise/.next/dev/server/chunks/ssr/%5Broot-of-the-server%5D__0bcc7cb._.js?10",
+  line1: 120, column1: 497, methodName: "LoginPage", arguments: []
+}, "server component frame: the ?10 query stays on the file, line and column come off the end");
+assert.deepStrictEqual(core.parseDebugStack(CLIENT_STACK), {
+  file: "http://localhost:3000/_next/static/chunks/node_modules__pnpm_0w17uau._.js",
+  line1: 1208, column1: 50, methodName: "InnerLayoutRouter", arguments: []
+}, "client component frame");
+assert.deepStrictEqual(core.parseDebugStack("Error\n    at x\n    at http://localhost:3000/a.js:3:4"),
+  { file: "http://localhost:3000/a.js", line1: 3, column1: 4, methodName: "", arguments: [] },
+  "an anonymous frame has no method name, not a wrong one");
+assert.strictEqual(core.parseDebugStack("Error: only a header"), null, "too short -> null");
+assert.strictEqual(core.parseDebugStack(undefined), null, "no stack -> null");
+
+// The dist dir is only readable off a server frame. Client chunk URLs have to be
+// rewritten into it, or the endpoint answers "Unknown url scheme 'http'".
+const SERVER_FILE = core.parseDebugStack(SERVER_STACK).file;
+assert.strictEqual(core.nextDistDir(SERVER_FILE), "/Users/mattjones/Documents/brandscout-enterprise/.next/dev");
+assert.strictEqual(core.nextDistDir("http://localhost:3000/_next/static/chunks/a.js"), null, "a client URL carries no dist dir");
+assert.strictEqual(core.nextDistDir(null), null);
+
+assert.strictEqual(
+  core.toNextFrameFile("http://localhost:3000/_next/static/chunks/1p46_%40base-ui_react._.js", "/app/.next/dev"),
+  "file:///app/.next/dev/static/chunks/1p46_@base-ui_react._.js",
+  "client chunk URL -> file in the dist dir, percent-decoded (measured: %40 must become @)");
+assert.strictEqual(core.toNextFrameFile(SERVER_FILE, "/app/.next/dev"), SERVER_FILE, "server frames are sent as they are");
+assert.strictEqual(core.toNextFrameFile("http://localhost:3000/_next/static/chunks/a.js", null),
+  "http://localhost:3000/_next/static/chunks/a.js", "no dist dir -> unchanged");
+
+// The element's own frame is usually library code (a design-system <Button>).
+// The answer is the nearest frame in the app's code.
+const RESOLVED = [
+  { status: "rejected", reason: "Unknown url scheme 'http'" },
+  { status: "fulfilled", value: { originalStackFrame: { file: "node_modules/.pnpm/@base-ui+react@1.5.0/node_modules/@base-ui/react/esm/internals/useRenderElement.js", line1: 168, column1: 3 } } },
+  { status: "fulfilled", value: { originalStackFrame: null } },
+  { status: "fulfilled", value: { originalStackFrame: { file: "src/components/auth/login-form.tsx", line1: 64, column1: 9 } } },
+  { status: "fulfilled", value: { originalStackFrame: { file: "src/app/login/page.tsx", line1: 21, column1: 5 } } }
+];
+assert.deepStrictEqual(core.firstAppFrame(RESOLVED), { file: "src/components/auth/login-form.tsx", line: 64, column: 9 },
+  "skips rejected, empty and node_modules frames; nearest app frame wins");
+assert.strictEqual(core.firstAppFrame(RESOLVED.slice(0, 3)), null, "only library frames -> null, not a node_modules path");
+assert.strictEqual(core.firstAppFrame(null), null, "endpoint returned nothing -> null");
+
 Promise.all([
   // Raced against a deadline, because the failure this suite hit for real was a
   // promise that NEVER settled: Node then exits 0 with no output, and a test
