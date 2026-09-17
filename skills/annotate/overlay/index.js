@@ -35,7 +35,16 @@
     window.__annotator = { mode: "off" };
     var state = window.__annotator;
     var KEY = "__annotations";
-    var load = function () { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) { return []; } };
+    var load = function () {
+      try {
+        // A comment still "resolving" when the page reloaded lost its source
+        // lookup, not its text. Hand it over without a source rather than never.
+        return (JSON.parse(localStorage.getItem(KEY)) || []).map(function (a) {
+          if (a && a.status === "resolving") a.status = "new";
+          return a;
+        });
+      } catch (e) { return []; }
+    };
     var persist = function () { try { localStorage.setItem(KEY, JSON.stringify(window.__annotations)); } catch (e) {} };
     window.__annotations = load();
 
@@ -46,13 +55,21 @@
     // right after this) — this only owns the append + wake.
     function save(record) {
       window.__annotations.push(record);
-      if (waiter) { var w = waiter; waiter = null; clearTimeout(w.timer); w.resolve(); }  // wake the long-poll
+      wake();
+    }
+    // Wakes the long-poll only when there is something to hand over. Point saves
+    // a comment as "resolving" first; waking on that would return the poll empty
+    // and count as a quiet round in the watch loop.
+    function wake() {
+      if (!waiter) return;
+      if (!window.__annotations.some(function (a) { return a.status === "new"; })) return;
+      var w = waiter; waiter = null; clearTimeout(w.timer); w.resolve();
     }
     function notify() { updateToolbar(); }
 
     var pal = palette.build();
     var uiHandles = ui.create(pal);
-    var ctx = { pal: pal, ui: uiHandles, state: state, save: save, persist: persist, notify: notify };
+    var ctx = { pal: pal, ui: uiHandles, state: state, save: save, wake: wake, persist: persist, notify: notify };
     var pointMode = point.create(ctx);
     var measureMode = measure.create(ctx);
     var studyMode = study.create(ctx);

@@ -1984,10 +1984,34 @@ const RESOLVED = [
   { status: "fulfilled", value: { originalStackFrame: { file: "src/components/auth/login-form.tsx", line1: 64, column1: 9 } } },
   { status: "fulfilled", value: { originalStackFrame: { file: "src/app/login/page.tsx", line1: 21, column1: 5 } } }
 ];
-assert.deepStrictEqual(core.firstAppFrame(RESOLVED), { file: "src/components/auth/login-form.tsx", line: 64, column: 9 },
-  "skips rejected, empty and node_modules frames; nearest app frame wins");
+assert.deepStrictEqual(core.firstAppFrame(RESOLVED), { file: "src/components/auth/login-form.tsx", line: 64, column: 9, usedFrom: [{ file: "src/app/login/page.tsx", line: 21 }] },
+  "skips rejected, empty and node_modules frames; nearest app frame wins; the next app file up is kept as usedFrom");
+assert.deepStrictEqual(core.firstAppFrame(RESOLVED.concat([
+  { status: "fulfilled", value: { originalStackFrame: { file: "src/app/login/page.tsx", line1: 30, column1: 1 } } },
+  { status: "fulfilled", value: { originalStackFrame: { file: "src/app/layout.tsx", line1: 39, column1: 5 } } },
+  { status: "fulfilled", value: { originalStackFrame: { file: "src/app/providers.tsx", line1: 9, column1: 5 } } }
+])).usedFrom.map((u) => u.file), ["src/app/login/page.tsx", "src/app/layout.tsx"],
+  "usedFrom skips repeats of a file already listed, and stops at two");
+assert.deepStrictEqual(core.firstAppFrame([
+  { status: "fulfilled", value: { originalStackFrame: { file: "src/app/login/page.tsx", line1: 47, column1: 1 } } },
+  { status: "fulfilled", value: { originalStackFrame: { file: "<anonymous>", line1: 1, column1: 20 } } }
+]).usedFrom, [], "an <anonymous> frame is not a file (seen live when client frames went unrewritten)");
 assert.strictEqual(core.firstAppFrame(RESOLVED.slice(0, 3)), null, "only library frames -> null, not a node_modules path");
 assert.strictEqual(core.firstAppFrame(null), null, "endpoint returned nothing -> null");
+
+// ---- Phase 3: point.js uses the lookup, and never hands over a half-built comment ----
+// The DOM half is proven in gates/phase3.gate.cjs against a real React 19 app;
+// these guards catch the wiring being removed.
+{
+  const src = fs.readFileSync(MOD("point.js"), "utf8");
+  const idx = fs.readFileSync(MOD("index.js"), "utf8");
+  assert.ok(/__nextjs_original-stack-frames/.test(codeOf(src)), "point.js resolves source through Next's dev endpoint");
+  assert.ok(/core\.firstAppFrame\(/.test(codeOf(src)), "point.js picks the app's own frame, not a node_modules one");
+  assert.ok(/__annotatorRawFetch\.call\(/.test(codeOf(src)), "the lookup uses the unwrapped fetch, so it is never recorded as page traffic");
+  assert.ok(/status: "resolving"/.test(codeOf(src)), "a comment is saved as resolving before its source lookup settles");
+  assert.ok(/a\.status === "resolving"/.test(codeOf(idx)), "index.js hands over a comment still resolving when the page reloaded");
+  assert.ok(/function wake\(\)/.test(codeOf(idx)) && /wake: wake/.test(codeOf(idx)), "index.js gives modes a wake() that is separate from save()");
+}
 
 Promise.all([
   // Raced against a deadline, because the failure this suite hit for real was a

@@ -586,14 +586,23 @@
   // Pure: the nearest frame in the app's own code. Results arrive in walk order
   // (the element first, then its ancestors), and the element itself is usually
   // a library component whose file is useless to the person fixing the page.
+  //
+  // `usedFrom` is the next two app files up the tree. The nearest frame is often
+  // a shared wrapper (measured on /login: the email field resolves to
+  // src/components/ui/input.tsx), while "make this field wider" usually means the
+  // file that placed THIS one (src/components/auth/login-form.tsx).
   function firstAppFrame(results) {
-    var list = results || [];
+    var list = results || [], hit = null;
     for (var i = 0; i < list.length; i++) {
       var r = list[i];
       var f = r && r.status === "fulfilled" && r.value && r.value.originalStackFrame;
-      if (f && f.file && !/(^|\/)node_modules\//.test(f.file)) return { file: f.file, line: f.line1, column: f.column1 };
+      if (!f || !f.file || f.file.charAt(0) === "<" || /(^|\/)node_modules\//.test(f.file)) continue;   // "<anonymous>" is no file
+      if (!hit) { hit = { file: f.file, line: f.line1, column: f.column1, usedFrom: [] }; continue; }
+      var seen = f.file === hit.file || hit.usedFrom.some(function (u) { return u.file === f.file; });
+      if (!seen) hit.usedFrom.push({ file: f.file, line: f.line1 });
+      if (hit.usedFrom.length === 2) break;
     }
-    return null;
+    return hit;
   }
 
   function firstFamily(value) {

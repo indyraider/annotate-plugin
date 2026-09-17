@@ -16,9 +16,15 @@
   var fitDimensions = core.fitDimensions;
   var SANS = palette.SANS;
 
+  // The page's own fetch, captured at LOAD, before measure.js or the context
+  // hooks wrap it. The overlay's lookups go through this, so they never show up
+  // as the page's traffic. On window so a second copy of this module keeps the
+  // first, unwrapped one.
+  if (typeof window !== "undefined" && !window.__annotatorRawFetch) window.__annotatorRawFetch = window.fetch;
+
   // ctx = { pal, ui, state, save, persist, notify } — see index.js (Task 5).
   function create(ctx) {
-    var pal = ctx.pal, ui = ctx.ui, state = ctx.state, save = ctx.save, persist = ctx.persist, notify = ctx.notify;
+    var pal = ctx.pal, ui = ctx.ui, state = ctx.state, save = ctx.save, wake = ctx.wake, persist = ctx.persist, notify = ctx.notify;
     var Z = 2147483647;
 
     // ---- attached images ----
@@ -67,6 +73,85 @@
       });
     }
 
+    // ---- element -> source (React 19) ----
+    // React 19 dropped fiber._debugSource, so this used to return null on every
+    // comment and the agent fell back to grepping page text. Measured 2026-09-17
+    // on React 19.2.4 / Next 16.3 Turbopack dev: every fiber still carries
+    // _debugOwner (the component that rendered it) and _debugStack (whose third
+    // line is the compiled JSX call site). Next's dev server maps a compiled site
+    // back to a file through the endpoint its own error overlay uses.
+    var SOURCE_WAIT_MS = 1500;
+    var FIBER_WALK = 25;
+    function fiberOf(el) {
+      var k = Object.keys(el).find(function (x) { return x.indexOf("__reactFiber$") === 0 || x.indexOf("__reactInternalInstance$") === 0; });
+      return k ? el[k] : null;
+    }
+    // A client owner is a fiber with the name on its type; a server owner is
+    // plain component info carrying its own name.
+    function ownerName(o) {
+      if (!o) return null;
+      if (o.type && typeof o.type !== "string") return o.type.displayName || o.type.name || null;
+      return typeof o.name === "string" ? o.name : null;
+    }
+    // Nearest first, e.g. ["LoginFormInner", "LoginForm", "LoginPage"]. Works on
+    // any React 19 dev build, Next or not, and a component name greps straight to
+    // its definition when the file lookup comes back empty.
+    function components(el) {
+      var out = [];
+      try {
+        var f = fiberOf(el);
+        for (var i = 0; f && i < FIBER_WALK && out.length < 5; i++, f = f.return) {
+          var n = ownerName(f._debugOwner);
+          if (n && out.indexOf(n) === -1) out.push(n);
+        }
+      } catch (e) {}
+      return out;
+    }
+    // Next's build directory, read off the root layout's server frame. Memoised
+    // once found; it cannot change while the page lives.
+    var distDirMemo = null;
+    function distDir() {
+      if (distDirMemo) return distDirMemo;
+      try {
+        var f = fiberOf(document.documentElement);
+        for (var i = 0; f && i < FIBER_WALK; i++, f = f.return) {
+          var fr = f._debugStack && core.parseDebugStack(f._debugStack.stack);
+          var d = fr && core.nextDistDir(fr.file);
+          if (d) return (distDirMemo = d);
+        }
+      } catch (e) {}
+      return null;
+    }
+    // Resolves { file, line, column, via } or null. Never rejects, never waits
+    // longer than SOURCE_WAIT_MS. React <= 18's _debugSource first, then Next's
+    // dev endpoint. No dist dir means this is not a Next App Router dev page, and
+    // nothing is POSTed to a server that has no such endpoint.
+    // ponytail: Next App Router dev only; Vite or the Pages Router get component
+    // names and a grep. Add a source-map reader if those become real users.
+    function resolveSource(el) {
+      var frames = [];
+      try {
+        var f = fiberOf(el);
+        for (var i = 0; f && i < FIBER_WALK; i++, f = f.return) {
+          var s = f._debugSource;
+          if (s) return Promise.resolve({ file: s.fileName, line: s.lineNumber, column: s.columnNumber || null, via: "react-debug-source" });
+          var fr = f._debugStack && core.parseDebugStack(f._debugStack.stack);
+          if (fr) frames.push(fr);
+        }
+      } catch (e) {}
+      var dist = distDir();
+      if (!frames.length || !dist || !window.__annotatorRawFetch) return Promise.resolve(null);
+      frames.forEach(function (fr) { fr.file = core.toNextFrameFile(fr.file, dist); });
+      var lookup = window.__annotatorRawFetch.call(window, "/__nextjs_original-stack-frames", {
+        method: "POST",
+        body: JSON.stringify({ frames: frames, isServer: false, isEdgeServer: false, isAppDirectory: true })
+      }).then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (data) { var hit = core.firstAppFrame(data); if (hit) hit.via = "next-dev"; return hit; })
+        .catch(function () { return null; });
+      var giveUp = new Promise(function (resolve) { setTimeout(function () { resolve(null); }, SOURCE_WAIT_MS); });
+      return Promise.race([lookup, giveUp]);
+    }
+
     function describe(el) {
       var attrs = {};
       var list = el.attributes || [];
@@ -74,19 +159,14 @@
         var n = list[i].name;
         if (n.indexOf("data-") === 0 || n === "aria-label" || n === "role" || n === "name") attrs[n] = list[i].value;
       }
-      var src = null;
-      try {
-        var k = Object.keys(el).find(function (x) { return x.indexOf("__reactFiber$") === 0 || x.indexOf("__reactInternalInstance$") === 0; });
-        var fiber = k ? el[k] : null;
-        for (var j = 0; fiber && j < 6 && !src; j++) { if (fiber._debugSource) src = fiber._debugSource; fiber = fiber.return; }
-      } catch (e) {}
       return {
         tag: el.tagName ? el.tagName.toLowerCase() : "",
         id: el.id || null,
         className: (typeof el.className === "string" ? el.className : "") || null,
         text: (el.textContent || "").trim().slice(0, 120) || null,
         attrs: attrs,
-        source: src ? { file: src.fileName, line: src.lineNumber } : null
+        components: components(el),
+        source: null                       // record() fills this in once resolveSource settles
       };
     }
 
@@ -183,10 +263,18 @@
     var seq = window.__annotations.reduce(function (m, a) { return Math.max(m, a.n || 0); }, 0);
     function record(el, comment, image) {
       seq += 1;
-      var a = { id: "a" + seq, n: seq, selector: buildSelector(el), descriptor: describe(el), comment: comment, url: location.pathname + location.search, ts: new Date().toISOString(), status: "new", hasImage: !!image };
+      var a = { id: "a" + seq, n: seq, selector: buildSelector(el), descriptor: describe(el), comment: comment, url: location.pathname + location.search, ts: new Date().toISOString(), status: "resolving", hasImage: !!image };
       // The image never rides along in the annotation — the agent pulls it by id.
       if (image) putImage(a.id, image);
+      // Saved, persisted and badged NOW, so a navigation in the next second
+      // cannot lose the comment. Handed to the agent only once the lookup
+      // settles, so the agent never reads a source that is still on its way.
       save(a); persist(); addBadge(el, seq); notify();
+      resolveSource(el).then(function (src) {
+        a.descriptor.source = src;
+        a.status = "new";
+        persist(); wake(); notify();
+      });
     }
 
     // ---- events (capture phase; only act in ON mode; never swallow our own UI) ----
