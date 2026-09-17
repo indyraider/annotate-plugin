@@ -129,3 +129,13 @@ the tool's own sandbox shape: boot returned `ready`, `__annotatorShoot()` return
 after the snippet had returned, and again after a navigation. Still unexercised through
 `browser_run_code_unsafe` itself.
 
+**Update, same day, live testing.** The MCP browser came free: the boot ran through
+`browser_run_code_unsafe` and `__annotatorShoot()` returned a JPEG. The MCP path is verified.
+
+Matt found a bug in the first minutes: walk up with the ↑ button, move the mouse off it, and
+the ring vanished. `onMousemove` checked "is this our chrome?" (hide the ring) before "is the
+box open?" (leave the ring alone), and the ↑ button is chrome. Swapped the order. The gate check
+written for it first **passed against the bug**: clicking ↑ redraws the ring, and the check
+jumped the mouse straight off the button. It only went red once the mouse crossed the box on
+the way out, as a hand does.
+

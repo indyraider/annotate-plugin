@@ -101,6 +101,24 @@ check("Alt+↑ in the comment box moves the comment to the parent element", asyn
   assert.ok(ok, "saved selector is the input's parent: " + a.selector);
 });
 
+check("the highlight survives the mouse crossing the comment box after a walk", async (page) => {
+  // Reported live: walk up with the arrow buttons, move off them, ring gone.
+  await setMode(page, "on");
+  await page.click(INPUT);
+  await page.waitForSelector(".__ann-ui textarea");
+  const up = page.locator('.__ann-ui button[title^="Parent element"]');
+  await up.click();
+  // Across the box first, the way a hand does it — the click itself redraws the
+  // ring, so jumping straight off the button proved nothing (this check passed
+  // against the bug until this line was added).
+  const ta = await page.locator(".__ann-ui textarea").boundingBox();
+  await page.mouse.move(ta.x + ta.width / 2, ta.y + ta.height / 2);
+  await page.mouse.move(5, 5);                                  // off the box, onto the page
+  const shown = await page.evaluate(() => getComputedStyle(document.querySelector(".__ann-hl")).display !== "none");
+  await page.keyboard.press("Escape");
+  assert.ok(shown, "highlight still visible after moving off the ↑ button");
+});
+
 check("⌘/Ctrl+click gathers several elements into one comment", async (page) => {
   await setMode(page, "on");
   await page.click("main h1", { modifiers: ["ControlOrMeta"] });

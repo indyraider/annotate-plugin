@@ -2033,7 +2033,8 @@ assert.strictEqual(core.firstAppFrame(null), null, "endpoint returned nothing ->
 {
   const src = codeOf(fs.readFileSync(MOD("point.js"), "utf8"));
   assert.ok(/e\.altKey && e\.key === "ArrowUp"/.test(src) && /e\.altKey && e\.key === "ArrowDown"/.test(src), "Alt+↑/↓ walk the target from the comment box");
-  assert.ok(/if \(box\) \{ ui\.hideInspector\(\); return; \}/.test(src), "while the box is open, mousemove no longer moves the highlight off the target");
+  assert.ok(/if \(box\) \{ ui\.hideInspector\(\); return; \}\s+if \(e\.shiftKey \|\| ui\.isOurs\(e\.target\)\)/.test(src),
+    "the open-box check runs BEFORE the our-chrome check, or hovering the ↑/↓ buttons hides the ring for good");
 }
 
 // ---- Phase 3: multi-select ----

@@ -387,10 +387,13 @@
     // interaction (open a dropdown/modal) without leaving annotate mode.
     function onMousemove(e) {
       if (state.mode !== "on") return;
-      if (e.shiftKey || ui.isOurs(e.target)) { ui.hideHighlight(); ui.hideInspector(); return; }
       // While the box is open the ring marks what the comment is ABOUT, which the
-      // tree walk can move. Following the mouse would point it at the wrong thing.
+      // tree walk can move. Following the mouse would point it at the wrong thing,
+      // and this check has to come FIRST: the ↑/↓ buttons are our own chrome, so
+      // the isOurs branch below used to hide the ring the moment the mouse left
+      // them, with nothing to bring it back (reported live, 2026-09-17).
       if (box) { ui.hideInspector(); return; }
+      if (e.shiftKey || ui.isOurs(e.target)) { ui.hideHighlight(); ui.hideInspector(); return; }
       ui.showHighlight(e.target);
       ui.showInspector(e.target, e.clientX, e.clientY);
     }
