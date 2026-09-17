@@ -70,3 +70,62 @@ first instinct was to go looking in `measure.js`.
 
 Two runs of one journey is a smoke test with numbers, not a benchmark. It catches 30ms becoming
 300ms. It will not settle a 5% argument.
+
+## Point and Measure (2026-09-17)
+
+Plan: `docs/superpowers/plans/2026-09-17-annotate-phase3-point-measure.md`.
+
+**Verified before building, not after.** React 19.2 has no `_debugSource`; every fiber has
+`_debugOwner` and `_debugStack`. Next 16's `POST /__nextjs_original-stack-frames` resolves
+server frames as sent and client frames once rewritten into the dist dir, percent-decoded.
+A page-triggered `exposeBinding` screenshot took 28ms. Tideswell forbids the microphone.
+
+**Shipped:** source file + component names on every comment; click-time screenshot;
+Alt+↑/↓ tree walk; ⌘/Ctrl+click multi-select; page errors and failed requests from the last
+30s; `lcp` entries; `ttfbMs` and `serverTiming` on navs; `mark` entries from the API, Alt+M and
+the toolbar.
+
+**Decisions worth keeping.**
+- Multi-select is ⌘/Ctrl, not the spec's Shift: Shift is Point's peek.
+- Source lookup is Next App Router dev only. Everything else gets component names and a grep.
+- Context is page-wide. The spec said "the element's console errors"; no browser API can
+  attribute an error to an element, so the label says what it is.
+- Voice dropped: `Permissions-Policy: microphone=()` on the target app. macOS Dictation covers it.
+- `setModeTools` no longer re-appends a showing node. Found while adding the Mark field:
+  Measure repaints on every entry, and re-appending blurred the input mid-word. The Study
+  favourite panel had the same latent bug.
+
+**Out of plan, found by the gate.**
+- **The nearest app file is often the wrong one to edit.** The login email field resolved to
+  `src/components/ui/input.tsx:18`, the shared wrapper. Correct, and useless for "make this
+  field wider", which means `login-form.tsx:64`, where this instance is placed. `source` now
+  carries `usedFrom`, the next two app files up the tree, and SKILL.md tells the agent to pick
+  before editing a shared component.
+- **`<anonymous>` counted as an app file.** Seen when the client-frame sabotage left frames
+  unrewritten: `usedFrom` listed `<anonymous>:1`. Filtered, with a unit test.
+- **Cross-realm arrays in the context-hook test.** Arrays built inside the `vm` sandbox fail
+  `deepStrictEqual` against identical outer arrays (foreign `Array` prototype). A test bug,
+  not a product one; compared through `Array.from`.
+
+**Verification.** `overlay.test.cjs` green. `gates/phase3.gate.cjs` green against Tideswell
+`/login`: 9 checks, zero page errors. The client navigation hit the server both runs
+(`rscMs 15-16`, `ttfbMs 13`), so the TTFB check was exercised, not skipped.
+
+Sabotage checks, all fired on the assertion they target:
+- core `parseDebugStack` reading line 1 -> the server-frame unit test.
+- client frames sent unrewritten -> the gate's client-source check (server check stayed green,
+  as it should: server frames need no rewrite).
+- red square removed before the shot -> the gate's pixel check (`23,23,23`, not red). The
+  first two attempts at this sabotage were themselves wrong: one opened the box before the
+  shot and failed on `hasShot` instead, never reaching the pixel; one added a bare
+  `textarea.__ann-ui` that the observer's `.__ann-ui textarea` selector never matched and
+  passed. A sabotage has to be checked for landing on its target, same as a test.
+- `throw err` removed from the fetch hook -> "the rejection was swallowed".
+- `setModeTools` same-node guard removed -> the gate's focus check.
+
+**MCP path.** The Playwright MCP browser was held by another session all session, again. The
+SKILL.md boot snippet was extracted verbatim and run in a `vm` context holding only `page`,
+the tool's own sandbox shape: boot returned `ready`, `__annotatorShoot()` returned a JPEG
+after the snippet had returned, and again after a navigation. Still unexercised through
+`browser_run_code_unsafe` itself.
+
