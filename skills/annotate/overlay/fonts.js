@@ -1,7 +1,8 @@
-// Annotate overlay — fonts mode. Click an element, and every element on the page
-// set in that same font becomes one "slot" you can retype. Two clicks gives you
-// two slots — headings and body — which is exactly a pairing, previewed live on
-// the real page instead of on a specimen sheet.
+// Annotate overlay — fonts mode. Click an element, and it plus the elements like
+// it in the same div (same tag, same classes, same font) become one "slot" you
+// can retype. Two clicks gives you two slots — headings and body — which is
+// exactly a pairing, previewed live on the real page instead of on a specimen
+// sheet.
 //
 // This is the ONE mode that writes to the page it is pointed at (Study's
 // read-only promise is Study's, not the overlay's). It writes only inline
@@ -50,10 +51,6 @@
   ];
 
   var WEIGHTS = ["keep", "300", "400", "500", "600", "700", "800"];
-
-  // Same cap and the same honesty rule as study.js's page sweep: a silent cap
-  // reports a partial swap as if it were the whole page.
-  var SWEEP_CAP = 8000;
 
   // ---- which fonts does this machine actually have? -------------------------
   //
@@ -314,7 +311,7 @@
   function create(ctx) {
     var ui = ctx.ui, notify = ctx.notify;
 
-    var slots = [];        // [{ id, family, to, weight, count, truncated, source, status, entries }]
+    var slots = [];        // [{ id, family, members, to, weight, count, source, status, entries }]
     var nextId = 1;
     // Which slot owns an element right now. Without this, swapping headings to
     // Inter and then clicking body text that was ALREADY Inter would have the
@@ -338,7 +335,7 @@
     // matched live, because nothing has claimed its elements yet.
     function groupOf(slot) {
       if (slot.entries.length) return slot.entries.map(function (e) { return e.el; });
-      return matching(slot.family, slot).els;
+      return matching(slot);
     }
     function focusSlot(slot) {
       clearMarks();
@@ -358,20 +355,36 @@
       return null;
     }
 
-    // Every element whose CURRENT computed first family is `family`, minus our
-    // own chrome and minus anything another slot has already claimed.
-    function matching(family, slot) {
-      var els = document.querySelectorAll("*"), out = [], truncated = false;
+    // The clicked element plus its look-alikes: same tag, same class attribute,
+    // same font, inside the nearest enclosing div. Reported live 2026-09-17: the
+    // old rule — every element on the page in that font — claimed nearly the
+    // whole page, because font-family inherits and every wrapper div matched.
+    // ponytail: "like it" is exact tag+class; loosen it if near-identical
+    // variants (an .active nav link) need to come along.
+    function similarIn(el) {
+      var family = core.firstFamily(getComputedStyle(el).fontFamily);
+      var parent = el.parentElement;
+      var scope = parent ? (parent.closest("div") || parent) : null;
+      if (!scope) return [el];
+      var cls = el.getAttribute("class") || "";
+      var els = scope.querySelectorAll(el.tagName), out = [];
       for (var i = 0; i < els.length; i++) {
-        var el = els[i];
-        if (el.closest && el.closest(".__ann-ui")) continue;
-        var own = owner.get(el);
-        if (own && own !== slot) continue;
-        if (core.firstFamily(getComputedStyle(el).fontFamily) !== family) continue;
-        if (out.length >= SWEEP_CAP) { truncated = true; break; }
-        out.push(el);
+        var c = els[i];
+        if (c !== el && ((c.getAttribute("class") || "") !== cls ||
+            core.firstFamily(getComputedStyle(c).fontFamily) !== family)) continue;
+        out.push(c);
       }
-      return { els: out, truncated: truncated };
+      return out;
+    }
+    // The slot's group as it stands: members still on the page, minus our own
+    // chrome and anything another slot has since claimed.
+    function matching(slot) {
+      return slot.members.filter(function (el) {
+        if (el.isConnected === false) return false;
+        if (el.closest && el.closest(".__ann-ui")) return false;
+        var own = owner.get(el);
+        return !own || own === slot;
+      });
     }
 
     // Every property this mode is allowed to touch, in one list rather than a
@@ -453,9 +466,8 @@
     function apply(slot) {
       revert(slot);
       if (!isActive(slot)) { if (notify) notify(); if (focused === slot) focusSlot(slot); return; }
-      var found = matching(slot.family, slot);
-      slot.truncated = found.truncated;
-      found.els.forEach(function (el) {
+      var found = matching(slot);
+      found.forEach(function (el) {
         var cs = getComputedStyle(el);
         var origPx = parseFloat(cs.fontSize) || 0;
         var entry = { el: el, prev: snapshot(el), origPx: origPx };
@@ -470,7 +482,7 @@
           el.style.setProperty(prop, decls[prop], "important");
         }
       });
-      slot.count = found.els.length;
+      slot.count = found.length;
       // The swap replaced the live match with a concrete element list, so the
       // outline has to be redrawn from it — otherwise it keeps describing the
       // group as it was before this slot claimed it.
@@ -565,17 +577,17 @@
       if (notify) notify();
     }
 
-    // A click makes a slot out of whatever font the clicked element is in. If it
-    // is already inside a slot's swap, that slot is re-selected rather than a
-    // second slot being created for the font we ourselves just applied.
+    // A click makes a slot out of the clicked element and its look-alikes. If it
+    // already belongs to a slot, that slot is re-selected rather than a second
+    // one being created for an element we already hold.
     function pick(el) {
       var own = owner.get(el);
       if (own) { own.anchor = el; focusSlot(own); return own; }
+      for (var i = 0; i < slots.length; i++) if (slots[i].members.indexOf(el) !== -1) { slots[i].anchor = el; focusSlot(slots[i]); return slots[i]; }
       var family = core.firstFamily(getComputedStyle(el).fontFamily);
       if (!family) return null;
-      for (var i = 0; i < slots.length; i++) if (slots[i].family === family) { slots[i].anchor = el; focusSlot(slots[i]); return slots[i]; }
-      var found = matching(family, null);
-      var slot = { id: nextId++, family: family, anchor: el, to: null, styles: blankStyles(), count: found.els.length, truncated: found.truncated, source: null, status: "", entries: [] };
+      var members = similarIn(el);
+      var slot = { id: nextId++, family: family, members: members, anchor: el, to: null, styles: blankStyles(), count: members.length, source: null, status: "", entries: [] };
       slots.push(slot);
       focusSlot(slot);
       return slot;
@@ -638,7 +650,7 @@
       // computed style can no longer answer once a scale has been written.
       var el = slot.anchor;
       if (el && el.isConnected === false) el = null;    // clicked, then re-rendered away
-      if (!el) el = slot.entries.length ? slot.entries[0].el : (matching(slot.family, slot).els[0] || null);
+      if (!el) el = slot.entries.length ? slot.entries[0].el : (matching(slot)[0] || null);
       if (!el) return { sizePx: 16, lineHeight: 1.4, tracking: 0 };
       var cs = getComputedStyle(el);
       var entry = ownedEntry(slot, el);
@@ -657,7 +669,7 @@
         return {
           id: s.id,
           label: s.family,
-          detail: s.count + (s.truncated ? "+" : "") + " element" + (s.count === 1 ? "" : "s"),
+          detail: s.count + " element" + (s.count === 1 ? "" : "s"),
           value: s.to || "",
           weights: WEIGHTS,
           styles: {
@@ -702,7 +714,7 @@
             // rather than retyped. font-size is the FIRST element's — a group
             // spans several sizes, and the scale is what actually generalises.
             css: css,
-            count: s.count, source: s.source, truncated: !!s.truncated
+            count: s.count, source: s.source
           };
         })
       };

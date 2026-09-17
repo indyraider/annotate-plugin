@@ -467,9 +467,9 @@ that outlives Reset with nothing on screen to say so — the one promise this mo
 **Driving it:**
 1. Click **Fonts** in the toolbar.
 2. **Click any text on the page.** The cursor is a crosshair while Fonts is picking. The
-   overlay reads that element's computed `font-family`, takes the first real family name, and
-   adds a **card** for it — one card per font, showing how many elements on the page are in
-   it. **Every element in that card's group stays outlined** so the count is something you can
+   overlay adds a **card** for that element **plus the elements like it in the same div**
+   (same tag, same classes, same font), showing how many it holds. Clicking a nav link picks
+   that nav's links, not every element on the page in that font. **Every element in that card's group stays outlined** so the count is something you can
    see rather than take on trust; the outline follows the newest pick and clears when you
    leave the mode. **Alt+click** to pick a link or button without the
    page navigating away (same convention as Study; plain click stops nothing, Shift skips).
@@ -493,7 +493,7 @@ that outlives Reset with nothing on screen to say so — the one promise this mo
    inside a mode that owns every click. **Reset** clears them.
 
 **Size, leading and tracking are RELATIVE, and that is what makes them safe on a group.** A
-card covers every element in one font, and those elements are not the same size — this page's
+card can cover several elements, and those elements are not always the same size — this page's
 headings span 52px down to an 11px eyebrow. Writing one absolute size across them would
 flatten the hierarchy you are trying to judge. So leading is written unitless, tracking and
 word spacing in `em` (both already ratios of each element's own size), and **size is a
@@ -505,7 +505,7 @@ size slider twice and it scales from the page's own value both times; it never c
 () => window.__annotatorFontsTake()
 ```
 ```
-{ url, fontsAvailable, swaps: [{ from, to, weight, count, source, truncated }] }
+{ url, fontsAvailable, swaps: [{ from, to, weight, count, source }] }
 ```
 Each swap carries `from`, `to`, and every typographic setting that was actually changed —
 `weight`, `sizeScale`, `lineHeight`, `tracking`, `wordSpacing`, `transform`, `italic`,
@@ -561,8 +561,8 @@ offered as `local`, so it needs no network at all.
 - **Only on the fallback path is the list incomplete.** With `local-fonts` granted the picker
   shows every installed family. Without it, it shows what the probe list happens to name — and
   it says so at the foot of the picker, so "my font is missing" always has an answer.
-- **The sweep caps at 8000 matched elements**; `truncated: true` says so, and a `+` appears
-  after the count in the row. Never present a truncated swap as the whole page.
+- **"Like it" means an exact tag and class match.** A nav link with an extra `active` class
+  won't join its siblings; click it separately to get its own card.
 - **Shadow DOM isn't walked**, same as Study.
 
 ## Compare mode

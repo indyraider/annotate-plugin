@@ -1517,9 +1517,17 @@ function fakeStyle() {
     removeProperty: function (k) { delete this._v[k]; delete this._p[k]; }
   };
 }
-function fakeEl(name, computedFamily, sizePx) {
+// Every fixture element sits in one div. A pick groups by tag + class inside
+// that div, so `tag`/`cls` decide which elements count as "like" each other.
+const fakeDiv = {
+  closest: function (sel) { return sel === "div" ? fakeDiv : null; },
+  querySelectorAll: function (tag) { return DOM.filter(function (e) { return e.tagName === tag; }); }
+};
+function fakeEl(name, computedFamily, sizePx, tag, cls) {
   return {
     name: name, _family: computedFamily, _size: (sizePx || 16) + "px", style: fakeStyle(), _attrs: {},
+    tagName: tag || "SPAN", parentElement: fakeDiv,
+    getAttribute: function (k) { return k === "class" ? (cls || null) : null; },
     closest: function () { return null; },
     setAttribute: function (k, v) { this._attrs[k] = v; },
     removeAttribute: function (k) { delete this._attrs[k]; },
@@ -1532,19 +1540,22 @@ function marked() { return DOM.filter(function (e) { return e.hasAttribute("data
 const INSTALLED = ["Futura", "Inter"];
 // Deliberately DIFFERENT sizes in one group: an h1 at 48 and an h2 at 24 are the
 // case that decides whether the size control scales or flattens.
-const h1 = fakeEl("h1", "HeadingFont", 48);
-const h2 = fakeEl("h2", "HeadingFont", 24);
+// h1, h2 and legacy share a tag and class, so they are one group.
+const h1 = fakeEl("h1", "HeadingFont", 48, "H2", "title");
+const h2 = fakeEl("h2", "HeadingFont", 24, "H2", "title");
 const span = fakeEl("span", "Futura", 16);
-const p = fakeEl("p", "BodyFont", 17);
+const p = fakeEl("p", "BodyFont", 17, "P");
+// Same font, same tag, different class: NOT like the headings.
+const eyebrow = fakeEl("eyebrow", "HeadingFont", 11, "H2", "eyebrow");
 // A page whose author already set an inline font-family, with !important. It is
 // still in the heading group (that IS its computed font), and it is the element
 // that proves revert restores rather than clears.
-const legacy = fakeEl("legacy", "HeadingFont", 20);
+const legacy = fakeEl("legacy", "HeadingFont", 20, "H2", "title");
 legacy.style.setProperty("font-family", '"HeadingFont", serif', "important");
 // Captured while the page is still pristine — the whole point is to compare
 // against what the author wrote, not against a state the tool already touched.
 const PRISTINE_LEGACY = JSON.stringify({ v: legacy.style._v, p: legacy.style._p });
-const DOM = [h1, h2, span, p, legacy];
+const DOM = [h1, h2, span, p, legacy, eyebrow];
 
 const docHandlers = {};
 global.document = {
@@ -1614,7 +1625,7 @@ click(h1);
 assert.strictEqual(fm.slotCount(), 1, "clicking text creates one slot");
 // The complaint this came from: the highlight lasted exactly as long as the
 // cursor stayed on the element, so nothing showed which elements a card owned.
-assert.deepStrictEqual(marked().sort(), ["h1", "h2", "legacy"], "clicking outlines every element in that font, not just the one clicked");
+assert.deepStrictEqual(marked().sort(), ["h1", "h2", "legacy"], "clicking outlines the element and its look-alikes in the same div — not every element in that font");
 // The controls open on the element you CLICKED, not on whichever member of the
 // group happens to come first in the markup. This page's heading group spans
 // 48px, 24px and 20px — first-in-DOM would open the size control on an outlier.
@@ -1626,7 +1637,7 @@ click(h2);
 assert.strictEqual(fm.rows()[0].base.sizePx, 24, "clicking a different member of the same group re-calibrates to THAT element");
 click(h1);
 assert.strictEqual(fm.rows()[0].label, "HeadingFont", "the slot is keyed on the font, not the element");
-assert.strictEqual(fm.rows()[0].detail, "3 elements", "the slot covers every element in that font (h1, h2 and the legacy one)");
+assert.strictEqual(fm.rows()[0].detail, "3 elements", "the slot covers the look-alikes (h1, h2 and the legacy one), not the same-font eyebrow with a different class");
 
 click(h2);
 assert.strictEqual(fm.slotCount(), 1, "a second element in the SAME font joins the existing slot rather than making a duplicate");
