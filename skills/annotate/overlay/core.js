@@ -116,7 +116,9 @@
     if (e.kind === "nav") return "nav " + normalisePath(e.from) + " -> " + normalisePath(e.to);
     if (e.kind === "action") return "action " + normalisePath(e.url);
     if (e.kind === "img") return "img " + normalisePath(e.url);
+    if (e.kind === "lcp") return "lcp " + normalisePath(e.url);
     if (e.kind === "dropped") return null;              // bookkeeping, not a measurement
+    if (e.kind === "mark") return null;                 // a timestamp to read against, not a measurement
     return e.kind;
   }
 
@@ -547,6 +549,93 @@
   // rejected: everything that inherited the page default really is one font,
   // and on a lightly-styled page that is the group you most want to click.
   var FIRST_FAMILY_RE = /^\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^,]*)/;
+  // ---- Phase 3: element -> source on React 19 ----
+  //
+  // React 19 removed fiber._debugSource, so Point's source lookup returned null
+  // on every comment. What React 19 keeps is fiber._debugStack, an Error whose
+  // third line is the compiled JSX call site. Next's dev server maps a compiled
+  // site back to a file through the endpoint its own error overlay uses. These
+  // four helpers are the pure half of that; point.js does the fetching.
+
+  // Pure: the JSX call site off a _debugStack string, in the frame shape Next's
+  // endpoint takes. Line 2, because 0 is React's marker and 1 is React's own
+  // JSX helper.
+  function parseDebugStack(stack) {
+    var line = String(stack || "").split("\n")[2];
+    if (!line) return null;
+    var m = /^at (?:(\S+) \()?(.+?):(\d+):(\d+)\)?$/.exec(line.trim());
+    if (!m) return null;
+    return { file: m[2], line1: Number(m[3]), column1: Number(m[4]), methodName: m[1] || "", arguments: [] };
+  }
+
+  // Pure: Next's build directory, read off a server component's frame. Nothing
+  // else on the page says where it is, and client frames need it (below).
+  function nextDistDir(file) {
+    var m = /^about:\/\/React\/Server\/file:\/\/(\/.+?)\/server\//.exec(String(file || ""));
+    return m ? decodeURIComponent(m[1]) : null;
+  }
+
+  // Pure: a client chunk URL rewritten into the dist dir, the way Next's own
+  // parseStack does it server-side. Sent as an http URL the endpoint answers
+  // "Unknown url scheme 'http'". Percent-decoded: measured, %40 fails and @ works.
+  function toNextFrameFile(file, distDir) {
+    var s = String(file || "");
+    var m = /^https?:\/\/[^/]+\/_next(\/static\/[^?#]+)/.exec(s);
+    if (!m || !distDir) return s;
+    return "file://" + distDir + decodeURIComponent(m[1]);
+  }
+
+  // Pure: the nearest frame in the app's own code. Results arrive in walk order
+  // (the element first, then its ancestors), and the element itself is usually
+  // a library component whose file is useless to the person fixing the page.
+  //
+  // `usedFrom` is the next two app files up the tree. The nearest frame is often
+  // a shared wrapper (measured on /login: the email field resolves to
+  // src/components/ui/input.tsx), while "make this field wider" usually means the
+  // file that placed THIS one (src/components/auth/login-form.tsx).
+  function firstAppFrame(results) {
+    var list = results || [], hit = null;
+    for (var i = 0; i < list.length; i++) {
+      var r = list[i];
+      var f = r && r.status === "fulfilled" && r.value && r.value.originalStackFrame;
+      if (!f || !f.file || f.file.charAt(0) === "<" || /(^|\/)node_modules\//.test(f.file)) continue;   // "<anonymous>" is no file
+      if (!hit) { hit = { file: f.file, line: f.line1, column: f.column1, usedFrom: [] }; continue; }
+      var seen = f.file === hit.file || hit.usedFrom.some(function (u) { return u.file === f.file; });
+      if (!seen) hit.usedFrom.push({ file: f.file, line: f.line1 });
+      if (hit.usedFrom.length === 2) break;
+    }
+    return hit;
+  }
+
+  // Pure: a capped log a comment can ask "what happened in the last N seconds?".
+  // since() hands out copies: a comment's saved context must not change later.
+  function createRecentLog(cap) {
+    var items = [];
+    return {
+      push: function (e) { items.push(e); if (items.length > cap) items.shift(); },
+      since: function (t) {
+        return items.filter(function (e) { return e.t >= t; }).map(function (e) {
+          var c = {}; for (var k in e) c[k] = e[k]; return c;
+        });
+      }
+    };
+  }
+
+  // Pure: time to first byte, the server's think time. null when the browser
+  // hides the timing (cross-origin without Timing-Allow-Origin zeroes both
+  // fields), because a 0 here would read as "instant".
+  function ttfbOf(entry) {
+    if (!entry || !entry.requestStart || !entry.responseStart) return null;
+    return Math.round(entry.responseStart - entry.requestStart);
+  }
+
+  // Pure: the Server-Timing header, when the app sends one. null when it does not.
+  function serverTimingOf(entry) {
+    var st = entry && entry.serverTiming;
+    if (!st || !st.length) return null;
+    return Array.prototype.map.call(st, function (s) { return { name: s.name, ms: Math.round(s.duration), desc: s.description || "" }; });
+  }
+
   function firstFamily(value) {
     if (!value) return "";
     var m = FIRST_FAMILY_RE.exec(String(value));
@@ -568,5 +657,8 @@
     isAbsentValue: isAbsentValue, nextMode: nextMode, firstFamily: firstFamily,
     normalisePath: normalisePath, entryKey: entryKey, entryMetric: entryMetric,
     summariseRun: summariseRun, compareRuns: compareRuns,
+    parseDebugStack: parseDebugStack, nextDistDir: nextDistDir,
+    toNextFrameFile: toNextFrameFile, firstAppFrame: firstAppFrame,
+    createRecentLog: createRecentLog, ttfbOf: ttfbOf, serverTimingOf: serverTimingOf,
   };
 });

@@ -35,7 +35,16 @@
     window.__annotator = { mode: "off" };
     var state = window.__annotator;
     var KEY = "__annotations";
-    var load = function () { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) { return []; } };
+    var load = function () {
+      try {
+        // A comment still "resolving" when the page reloaded lost its source
+        // lookup, not its text. Hand it over without a source rather than never.
+        return (JSON.parse(localStorage.getItem(KEY)) || []).map(function (a) {
+          if (a && a.status === "resolving") a.status = "new";
+          return a;
+        });
+      } catch (e) { return []; }
+    };
     var persist = function () { try { localStorage.setItem(KEY, JSON.stringify(window.__annotations)); } catch (e) {} };
     window.__annotations = load();
 
@@ -46,13 +55,21 @@
     // right after this) — this only owns the append + wake.
     function save(record) {
       window.__annotations.push(record);
-      if (waiter) { var w = waiter; waiter = null; clearTimeout(w.timer); w.resolve(); }  // wake the long-poll
+      wake();
+    }
+    // Wakes the long-poll only when there is something to hand over. Point saves
+    // a comment as "resolving" first; waking on that would return the poll empty
+    // and count as a quiet round in the watch loop.
+    function wake() {
+      if (!waiter) return;
+      if (!window.__annotations.some(function (a) { return a.status === "new"; })) return;
+      var w = waiter; waiter = null; clearTimeout(w.timer); w.resolve();
     }
     function notify() { updateToolbar(); }
 
     var pal = palette.build();
     var uiHandles = ui.create(pal);
-    var ctx = { pal: pal, ui: uiHandles, state: state, save: save, persist: persist, notify: notify };
+    var ctx = { pal: pal, ui: uiHandles, state: state, save: save, wake: wake, persist: persist, notify: notify };
     var pointMode = point.create(ctx);
     var measureMode = measure.create(ctx);
     var studyMode = study.create(ctx);
@@ -98,7 +115,8 @@
       // these strings exist; it draws the node it is handed.
       if (m === "measure") {
         uiHandles.setClickHint("Passes through (recording)");
-        uiHandles.setModeTools(uiHandles.toolsText("Recording — clicks pass straight through · " + measureMode.size() + " entries"));
+        uiHandles.setMeasureStatus("Recording — clicks pass straight through · " + measureMode.size() + " entries");
+        uiHandles.setModeTools(uiHandles.measurePanel);
       } else if (m === "study") {
         uiHandles.setClickHint("Pin the readout");
         uiHandles.setModeTools(uiHandles.favPanel);
@@ -132,7 +150,7 @@
                : "Alt+click to pick a link or button without following it.");
       } else if (m === "on") {
         uiHandles.setClickHint("Leave a comment");
-        uiHandles.setModeTools(uiHandles.toolsText("Click an element to comment · hold Shift to click through"));
+        uiHandles.setModeTools(uiHandles.toolsText("Click an element to comment · ⌘/Ctrl+click to gather several · hold Shift to click through"));
       } else {
         uiHandles.setClickHint("Leave a comment");
         uiHandles.setModeTools(null);
@@ -258,6 +276,9 @@
     uiHandles.onAct("cmp-run", runCompare);
     uiHandles.onAct("cmp-filter", function () { if (loadBaseline()) runCompare(); });
 
+    // ---- Measure: mark point ----
+    uiHandles.onMeasureMark(function (label) { measureMode.mark(label); });
+
     // ui.js only knows it collected a note and a comma-separated tags string —
     // it has no idea a "study mode" or a "favourite" concept exists. index.js
     // is the one that turns that into the real pin-and-record action below.
@@ -301,6 +322,8 @@
     // moment this needs to fire to turn it back on.
     document.addEventListener("keydown", function (e) {
       if (e.altKey && (e.key === "a" || e.key === "A")) { e.preventDefault(); toggle(); }
+      // e.code, not e.key: Option+M on a Mac puts "µ" in e.key.
+      else if (e.altKey && e.code === "KeyM" && state.mode === "measure") { e.preventDefault(); measureMode.mark(""); }
     }, true);
 
     // ---- long-poll API for the skill's watch loop ----
@@ -311,6 +334,8 @@
       updateToolbar();
       return out;
     };
+    // Drops a labelled marker into the recording. null when Measure is not on.
+    window.__annotatorMark = function (label) { return measureMode.mark(label); };
     window.__annotatorWait = function (timeoutMs) {
       return new Promise(function (resolve) {
         if (window.__annotations.some(function (a) { return a.status === "new"; })) return resolve(window.__annotatorDrain());

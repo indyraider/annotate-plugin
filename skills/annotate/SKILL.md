@@ -24,6 +24,7 @@ your context and nothing is fetched over the network.
      const FILES = ["core.js","palette.js","fontpicker.js","fontspanel.js","ui.js","point.js","measure.js","study-motion.js","study.js","fonts.js","index.js"];
      for (const f of FILES) await page.context().addInitScript({ path: "<this skill's directory>/overlay/" + f });
      try { await page.context().grantPermissions(["local-fonts"]); } catch (e) {}
+     try { await page.context().exposeBinding("__annotatorShoot", async ({ page }) => "data:image/jpeg;base64," + (await page.screenshot({ type: "jpeg", quality: 70, scale: "css" })).toString("base64")); } catch (e) {}
      await page.reload({ waitUntil: "domcontentloaded" });
      return await page.evaluate(() => { window.__annotatorMods.index.setup(); return "ready"; });
    }` })
@@ -69,10 +70,14 @@ your context and nothing is fetched over the network.
    leaves it**, which is how you get back to using the page.
    - **Point** — hover highlights the element **and shows an inspector card** (computed
      font/size/color/padding/etc.), click opens a comment box, **⌘/Ctrl+Enter** or **Save**
-     submits. In the box he can **⌘V a screenshot** (⌃⌘⇧4 copies one straight to the
-     clipboard) or **drag an image file onto the box** from Finder — a thumbnail confirms
-     it, ✕ removes it. **Hold Shift to "peek"** — click through for one action (open a
-     dropdown/modal) without leaving the mode.
+     submits. The screenshot is taken **the instant he clicks**, before the box opens, so a
+     tooltip or an open dropdown is in it. In the box, **↑ / ↓** (or **Alt+↑ / Alt+↓**) move
+     the comment to the parent element and back, for when the click landed on a `<span>`
+     inside the thing he means. **⌘/Ctrl+click** gathers several elements into one comment
+     (dashed outlines; Escape drops them). He can also **⌘V a screenshot** of his own (⌃⌘⇧4
+     copies one straight to the clipboard) or **drag an image file onto the box** from Finder
+     — a thumbnail confirms it, ✕ removes it. **Hold Shift to "peek"** — click through for one
+     action (open a dropdown/modal) without leaving the mode.
    - **Measure** — records timings, clicks pass straight through (see below).
    - **Compare** — baseline vs re-run. Save a run, let the agent work, run the same journey
      again, see what moved. See the Compare section below.
@@ -97,13 +102,19 @@ Select **Measure** in the toolbar (or Alt+A round to it). In measure mode the
 overlay records and **does not touch clicks** — Matt uses the app completely normally while
 it watches. Row 2 of the toolbar shows the running entry count.
 
-Entries come back on the same poll, in `perf`. Five kinds, each with `t` (ms since page load):
+Row 2 shows the running entry count and a **Mark** field: type what just felt slow and press
+Enter or **Mark**, or press **Alt+M** for an unlabelled mark. From the agent side:
+`() => window.__annotatorMark("label")` (returns the entry, or `null` when Measure is off).
+
+Entries come back on the same poll, in `perf`. Each has `t` (ms since page load):
 
 | kind | fields | what it tells you |
 |------|--------|-------------------|
-| `nav` | `from`, `to`, `servedFromCache`, `rscMs`, `toPaintMs` | Client-side route change. `servedFromCache: true` means the click needed **no** server request. Detected from the browser's own resource timings by looking **backward** for a `?_rsc=` request — Next starts that request *before* it pushes the URL, and does not route it through `window.fetch`. |
+| `nav` | `from`, `to`, `servedFromCache`, `rscMs`, `ttfbMs`, `serverTiming`, `toPaintMs` | Client-side route change. `servedFromCache: true` means the click needed **no** server request. Detected from the browser's own resource timings by looking **backward** for a `?_rsc=` request — Next starts that request *before* it pushes the URL, and does not route it through `window.fetch`. **`ttfbMs` is the server's think time** (request sent to first byte); `rscMs` also includes the download. `serverTiming` is the app's `Server-Timing` header as `[{ name, ms, desc }]`, or `null` when it sends none (Tideswell sends none). |
 | `action` | `url`, `ms`, `ok` | A Server Action (e.g. sending a message), spotted by its `Next-Action` header. `ms` is time to response headers — the server's thinking time. |
-| `img` | `url`, `ms`, `ttfbMs`, `transferSize`, `decodedBodySize`, `status` | A chat attachment. **`ms` is the trustworthy field** — it covers the whole two-hop redirect. `ttfbMs`, `transferSize`, `decodedBodySize` and `status` read `0` whenever the request redirects cross-origin to storage, because that origin sends no `Timing-Allow-Origin` header. Do not read `transferSize: 0` as a cache hit here. |
+| `img` | `url`, `ms`, `ttfbMs`, `transferSize`, `decodedBodySize`, `status`, `serverTiming` | A chat attachment. **`ms` is the trustworthy field** — it covers the whole two-hop redirect. `ttfbMs`, `transferSize`, `decodedBodySize` and `status` read `0` whenever the request redirects cross-origin to storage, because that origin sends no `Timing-Allow-Origin` header. Do not read `transferSize: 0` as a cache hit here. |
+| `lcp` | `url`, `ms`, `size`, `element` | Largest contentful paint of the **page load** — when the main content appeared. One per recording, read from the browser's buffer, so it is there even though recording started after load. |
+| `mark` | `label` | Matt (or you) marking a moment. Not a measurement: read the entries whose `t` sits just before it. Compare ignores marks. |
 | `shift` | `value` | The page jumping (e.g. an image landing with no space reserved). |
 | `longtask` | `ms` | The main thread blocked — the browser, not the server. |
 
@@ -123,6 +134,10 @@ persisted and the buffer is in-memory — deliberately, since image attachments 
 for the `localStorage` quota); the loop drains continuously so at most ~25s is lost, and Matt
 flips it back on. `layout-shift` and `longtask` are Chromium-only, which the Playwright
 browser is. The first page load is not captured — recording starts when the mode is switched on.
+LCP describes the hard page load only: client-side navigations produce none. If the watch
+loop drains the `lcp` entry before a later, larger paint lands, you keep the earlier value.
+Actions have no `ttfbMs`: their resource timing is only written once the body has been read,
+which is after the point `ms` measures.
 
 ## Study mode
 
@@ -243,6 +258,7 @@ if you need a real answer for that element.
     const FILES = ["core.js","palette.js","fontpicker.js","fontspanel.js","ui.js","point.js","measure.js","study-motion.js","study.js","fonts.js","index.js"];
     for (const f of FILES) await page.context().addInitScript({ path: "<this skill's directory>/overlay/" + f });
     try { await page.context().grantPermissions(["local-fonts"]); } catch (e) {}
+    try { await page.context().exposeBinding("__annotatorShoot", async ({ page }) => "data:image/jpeg;base64," + (await page.screenshot({ type: "jpeg", quality: 70, scale: "css" })).toString("base64")); } catch (e) {}
     await page.reload({ waitUntil: "domcontentloaded" });
     return await page.evaluate(() => { window.__annotatorMods.index.setup(); return "ready"; });
   }` })
@@ -650,7 +666,7 @@ Repeat until Matt says done (or the browser closes / evaluate errors):
      **Re-run the same poll first**; it will find the modules already re-injected and just
      call `setup()`. Only if it errors again immediately should you re-run Setup step 3.
 
-2. **For each annotation in `anns`** `{ id, n, selector, descriptor, comment, url, hasImage }`:
+2. **For each annotation in `anns`** `{ id, n, selector, descriptor, others, comment, url, hasImage, hasShot, context }`:
    - **If `hasImage`, pull Matt's attachment FIRST** — it's the most direct statement of
      what he means. **Never return the image through the poll or a plain evaluate**: a
      screenshot is ~100k+ tokens of base64 and would swamp the context. Route it
@@ -675,13 +691,32 @@ Repeat until Matt says done (or the browser closes / evaluate errors):
      and `Read` the `.jpg`. `__annotatorImageTake` is **read-and-forget**, but the most
      recent image stays retrievable until the next take — so if the write fails (bad path,
      tool error) just call it again with the same id. Fetch it before you start fixing.
-   - **Screenshot it**: `browser_evaluate` → `() => window.__annotatorReveal("<id>")`
-     (scrolls it into view), then `browser_take_screenshot`. The `#n` badge is visible
-     in the shot, so annotation `n` ↔ badge `n`. View it for visual context.
-   - **Find the source**: if `descriptor.source` is set (React dev `_debugSource`), go
-     straight to that `file:line`. Otherwise grep for `descriptor.text`,
-     `descriptor.className`, or a `data-*`/`aria-label` from `descriptor.attrs`, scoped
-     by `url` (which route/page it's on). Confident → fix. Two candidates → show Matt, he picks.
+   - **Look at what he saw**: if `hasShot`, pull the click-time screenshot exactly like an
+     attachment, with id `"<id>-shot"` (`__annotatorImageTake("<id>-shot")` through
+     `browser_evaluate`'s `filename`, never inline). It was taken the moment he clicked, so
+     tooltips and open menus are in it; the highlight ring marks what he clicked, and earlier
+     `#n` badges on the page are visible too. If `hasShot` is false (the fallback boot path
+     has no screenshot binding), fall back to `() => window.__annotatorReveal("<id>")` then
+     `browser_take_screenshot`.
+   - **Find the source**: `descriptor.source` is `{ file, line, column, via, usedFrom }`,
+     already the nearest file in the app's own code (library components are skipped).
+     **`usedFrom` is the next two app files up the tree, and it matters:** the nearest file is
+     often a shared wrapper (the login email field resolves to `src/components/ui/input.tsx`),
+     while a comment like "make this wider" usually means the file that placed *this* instance
+     (`usedFrom[0]`, `src/components/auth/login-form.tsx:64`). Decide which one the comment is
+     about before editing; changing the shared wrapper changes every input in the app.
+     `via: "next-dev"` means Next's dev server resolved it, which only happens on a Next App
+     Router dev server. If `source` is `null`, grep for the component:
+     `descriptor.components` lists the owning components nearest first, so
+     `function <components[0]>` or `const <components[0]>` usually finds the file. After that,
+     `descriptor.text`, `descriptor.className`, or a `data-*`/`aria-label` from
+     `descriptor.attrs`, scoped by `url`. Confident → fix. Two candidates → show Matt, he picks.
+   - **`others`** (⌘-click) is the same `{ selector, descriptor }` for each extra element. One
+     comment, several places: fix them together.
+   - **`context`** is `{ windowMs, errors, failedRequests }`: the page's `console.error`s,
+     uncaught errors, rejected promises, and failed `fetch`/image/script loads **in the 30
+     seconds before he saved**. Page-wide, not per element. When it is non-empty, read it
+     before guessing at a cause. XHR failures are not captured.
    - **Fix or queue**: process in the order returned (Save order). If you're mid-fix when
      a batch arrives, finish the current one first, then the rest — tell Matt what you're
      on and what's queued.
@@ -696,8 +731,6 @@ Repeat until Matt says done (or the browser closes / evaluate errors):
   text.** `disable()` closes the box on the way out; this is intentional, not a bug — the
   box's own Escape handler only exists while the mode is enabled, so leaving the box open
   across a mode switch would make it un-closable. Save or Cancel before toggling off.
-- Screenshots are **process-time**, not save-time — a purely transient state (hover-only
-  tooltip, a dropdown that closed) may not re-show; the text comment carries those.
 - While mode is **ON**, the overlay swallows `pointerdown`/`mousedown`/`click`/`auxclick`
   on page elements so a click can't navigate (links/buttons are inert until you flip OFF) —
   that's what lets you click a hyperlink to comment on it without being taken to its target.
@@ -741,3 +774,10 @@ Repeat until Matt says done (or the browser closes / evaluate errors):
   consuming project is a copy, is gitignored there, and must never be edited — the
   copy drifted for two days once, silently missing an entire feature. To refresh a
   consumer, re-install the plugin.
+- **Voice was dropped** (2026-09-17, spec §6.1's timebox). Tideswell sends
+  `Permissions-Policy: microphone=()`, which forbids microphone access on every page of the
+  app Point exists for, so no in-page recorder can work there. macOS Dictation types into any
+  focused text field, the comment box included, with no code from this tool.
+- **A comment reaches the agent up to 1.5s after Save.** It is saved and badged at once, then
+  held back (`status: "resolving"`) until its source lookup settles. A reload in that window
+  hands it over without a source, never loses it.

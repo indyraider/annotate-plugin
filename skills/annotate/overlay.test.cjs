@@ -1928,7 +1928,217 @@ assert.ok(/list\.style\.maxHeight[\s\S]{0,200}?var h = pop\.offsetHeight/.test(f
   "maxHeight is clamped BEFORE offsetHeight is read — measuring first gives the unclamped height and the popover lands too high");
 
 
+// ---- Phase 3: element -> source on React 19 --------------------------------
+// React 19 removed fiber._debugSource. These stacks are the real shapes read off
+// fibers on the Tideswell /login page (React 19.2.4, Next 16.3 Turbopack dev),
+// 2026-09-17. Line 0 is React's marker, line 1 is React's own JSX helper, line 2
+// is the component that wrote the JSX — the only line worth sending.
+const SERVER_STACK = [
+  "Error: react-stack-top-frame",
+  "    at fakeJSXCallSite (http://localhost:3000/_next/static/chunks/0l4__next_dist_compiled_react-server-dom-turbopack_14crl3y._.js:2002:21)",
+  "    at LoginPage (about://React/Server/file:///Users/mattjones/Documents/brandscout-enterprise/.next/dev/server/chunks/ssr/%5Broot-of-the-server%5D__0bcc7cb._.js?10:120:497)",
+  "    at Object.react_stack_bottom_frame (http://localhost:3000/_next/static/chunks/0l4__next_dist_compiled_react-server-dom-turbopack_14crl3y._.js:2769:93)"
+].join("\n");
+const CLIENT_STACK = [
+  "Error: react-stack-top-frame",
+  "    at exports.jsx (http://localhost:3000/_next/static/chunks/0l4__next_dist_compiled_1yan1u3._.js:1151:33)",
+  "    at InnerLayoutRouter (http://localhost:3000/_next/static/chunks/node_modules__pnpm_0w17uau._.js:1208:50)",
+  "    at Object.react_stack_bottom_frame (http://localhost:3000/_next/static/chunks/0l4__next_dist_compiled_react-dom_1pmu1hc._.js:14895:24)"
+].join("\n");
+
+assert.deepStrictEqual(core.parseDebugStack(SERVER_STACK), {
+  file: "about://React/Server/file:///Users/mattjones/Documents/brandscout-enterprise/.next/dev/server/chunks/ssr/%5Broot-of-the-server%5D__0bcc7cb._.js?10",
+  line1: 120, column1: 497, methodName: "LoginPage", arguments: []
+}, "server component frame: the ?10 query stays on the file, line and column come off the end");
+assert.deepStrictEqual(core.parseDebugStack(CLIENT_STACK), {
+  file: "http://localhost:3000/_next/static/chunks/node_modules__pnpm_0w17uau._.js",
+  line1: 1208, column1: 50, methodName: "InnerLayoutRouter", arguments: []
+}, "client component frame");
+assert.deepStrictEqual(core.parseDebugStack("Error\n    at x\n    at http://localhost:3000/a.js:3:4"),
+  { file: "http://localhost:3000/a.js", line1: 3, column1: 4, methodName: "", arguments: [] },
+  "an anonymous frame has no method name, not a wrong one");
+assert.strictEqual(core.parseDebugStack("Error: only a header"), null, "too short -> null");
+assert.strictEqual(core.parseDebugStack(undefined), null, "no stack -> null");
+
+// The dist dir is only readable off a server frame. Client chunk URLs have to be
+// rewritten into it, or the endpoint answers "Unknown url scheme 'http'".
+const SERVER_FILE = core.parseDebugStack(SERVER_STACK).file;
+assert.strictEqual(core.nextDistDir(SERVER_FILE), "/Users/mattjones/Documents/brandscout-enterprise/.next/dev");
+assert.strictEqual(core.nextDistDir("http://localhost:3000/_next/static/chunks/a.js"), null, "a client URL carries no dist dir");
+assert.strictEqual(core.nextDistDir(null), null);
+
+assert.strictEqual(
+  core.toNextFrameFile("http://localhost:3000/_next/static/chunks/1p46_%40base-ui_react._.js", "/app/.next/dev"),
+  "file:///app/.next/dev/static/chunks/1p46_@base-ui_react._.js",
+  "client chunk URL -> file in the dist dir, percent-decoded (measured: %40 must become @)");
+assert.strictEqual(core.toNextFrameFile(SERVER_FILE, "/app/.next/dev"), SERVER_FILE, "server frames are sent as they are");
+assert.strictEqual(core.toNextFrameFile("http://localhost:3000/_next/static/chunks/a.js", null),
+  "http://localhost:3000/_next/static/chunks/a.js", "no dist dir -> unchanged");
+
+// The element's own frame is usually library code (a design-system <Button>).
+// The answer is the nearest frame in the app's code.
+const RESOLVED = [
+  { status: "rejected", reason: "Unknown url scheme 'http'" },
+  { status: "fulfilled", value: { originalStackFrame: { file: "node_modules/.pnpm/@base-ui+react@1.5.0/node_modules/@base-ui/react/esm/internals/useRenderElement.js", line1: 168, column1: 3 } } },
+  { status: "fulfilled", value: { originalStackFrame: null } },
+  { status: "fulfilled", value: { originalStackFrame: { file: "src/components/auth/login-form.tsx", line1: 64, column1: 9 } } },
+  { status: "fulfilled", value: { originalStackFrame: { file: "src/app/login/page.tsx", line1: 21, column1: 5 } } }
+];
+assert.deepStrictEqual(core.firstAppFrame(RESOLVED), { file: "src/components/auth/login-form.tsx", line: 64, column: 9, usedFrom: [{ file: "src/app/login/page.tsx", line: 21 }] },
+  "skips rejected, empty and node_modules frames; nearest app frame wins; the next app file up is kept as usedFrom");
+assert.deepStrictEqual(core.firstAppFrame(RESOLVED.concat([
+  { status: "fulfilled", value: { originalStackFrame: { file: "src/app/login/page.tsx", line1: 30, column1: 1 } } },
+  { status: "fulfilled", value: { originalStackFrame: { file: "src/app/layout.tsx", line1: 39, column1: 5 } } },
+  { status: "fulfilled", value: { originalStackFrame: { file: "src/app/providers.tsx", line1: 9, column1: 5 } } }
+])).usedFrom.map((u) => u.file), ["src/app/login/page.tsx", "src/app/layout.tsx"],
+  "usedFrom skips repeats of a file already listed, and stops at two");
+assert.deepStrictEqual(core.firstAppFrame([
+  { status: "fulfilled", value: { originalStackFrame: { file: "src/app/login/page.tsx", line1: 47, column1: 1 } } },
+  { status: "fulfilled", value: { originalStackFrame: { file: "<anonymous>", line1: 1, column1: 20 } } }
+]).usedFrom, [], "an <anonymous> frame is not a file (seen live when client frames went unrewritten)");
+assert.strictEqual(core.firstAppFrame(RESOLVED.slice(0, 3)), null, "only library frames -> null, not a node_modules path");
+assert.strictEqual(core.firstAppFrame(null), null, "endpoint returned nothing -> null");
+
+// ---- Phase 3: point.js uses the lookup, and never hands over a half-built comment ----
+// The DOM half is proven in gates/phase3.gate.cjs against a real React 19 app;
+// these guards catch the wiring being removed.
+{
+  const src = fs.readFileSync(MOD("point.js"), "utf8");
+  const idx = fs.readFileSync(MOD("index.js"), "utf8");
+  assert.ok(/__nextjs_original-stack-frames/.test(codeOf(src)), "point.js resolves source through Next's dev endpoint");
+  assert.ok(/core\.firstAppFrame\(/.test(codeOf(src)), "point.js picks the app's own frame, not a node_modules one");
+  assert.ok(/__annotatorRawFetch\.call\(/.test(codeOf(src)), "the lookup uses the unwrapped fetch, so it is never recorded as page traffic");
+  assert.ok(/status: "resolving"/.test(codeOf(src)), "a comment is saved as resolving before its source lookup settles");
+  assert.ok(/a\.status === "resolving"/.test(codeOf(idx)), "index.js hands over a comment still resolving when the page reloaded");
+  assert.ok(/function wake\(\)/.test(codeOf(idx)) && /wake: wake/.test(codeOf(idx)), "index.js gives modes a wake() that is separate from save()");
+}
+
+// ---- Phase 3: click-time screenshot ----
+// Taken when Matt clicks, not when the agent gets round to it: by then a tooltip
+// or an open dropdown is gone, which made those states impossible to annotate.
+{
+  const src = codeOf(fs.readFileSync(MOD("point.js"), "utf8"));
+  const skill = fs.readFileSync(path.join(__dirname, "SKILL.md"), "utf8");
+  assert.ok(/shoot\(\)\.then\(function \(shot\) \{[\s\S]{0,300}openComment\(el, x, y, shot\)/.test(src),
+    "the comment box opens only AFTER the screenshot resolves — opened first, the box covers what was clicked");
+  assert.ok(/putImage\(a\.id \+ "-shot", shot\)/.test(src), "the shot is stored under <id>-shot, never inside the annotation");
+  assert.strictEqual((skill.match(/exposeBinding\("__annotatorShoot"/g) || []).length, 2,
+    "both boot snippets in SKILL.md register the screenshot binding");
+}
+
+// ---- Phase 3: tree walk ----
+// The click lands on a <span>; the comment is about the card. ↑ in the box moves
+// the target to the parent. The highlight follows the TARGET while the box is
+// open, not the mouse, or the ring stops showing what the comment is about.
+{
+  const src = codeOf(fs.readFileSync(MOD("point.js"), "utf8"));
+  assert.ok(/e\.altKey && e\.key === "ArrowUp"/.test(src) && /e\.altKey && e\.key === "ArrowDown"/.test(src), "Alt+↑/↓ walk the target from the comment box");
+  assert.ok(/if \(box\) \{ ui\.hideInspector\(\); return; \}\s+if \(e\.shiftKey \|\| ui\.isOurs\(e\.target\)\)/.test(src),
+    "the open-box check runs BEFORE the our-chrome check, or hovering the ↑/↓ buttons hides the ring for good");
+}
+
+// ---- Phase 3: multi-select ----
+// ⌘/Ctrl, not Shift: Shift is Point's peek, and taking it would break click-through.
+{
+  const src = codeOf(fs.readFileSync(MOD("point.js"), "utf8"));
+  assert.ok(/if \(e\.metaKey \|\| e\.ctrlKey\) \{ togglePick\(el\); return; \}/.test(src), "⌘/Ctrl+click toggles a pick instead of opening the box");
+  assert.ok(/if \(e\.shiftKey\) return;\s+\/\/ peek/.test(src), "Shift still means peek");
+  assert.ok(/others: els\.slice\(1\)/.test(src), "extra elements ride along as others[]");
+  assert.ok(/function disable\(\)[\s\S]*?clearPicks\(\)/.test(src), "leaving Point clears the pick outlines");
+}
+
+// ---- Phase 3: silent context ----
+const rl = core.createRecentLog(3);
+[1, 2, 3, 4].forEach((t) => rl.push({ t, n: t }));
+assert.deepStrictEqual(rl.since(0).map((e) => e.n), [2, 3, 4], "caps at 3, oldest out first");
+assert.deepStrictEqual(rl.since(3).map((e) => e.n), [3, 4], "since() is inclusive");
+const rlCopy = rl.since(0); rlCopy[0].n = 99;
+assert.strictEqual(rl.since(0)[0].n, 2, "since() hands out copies, so a saved comment's context cannot change afterwards");
+
+// The hooks run at module LOAD in a real page. Prove them in a sandbox that has
+// a window, and prove a second copy of the module adds no second hook.
+const vm = require("node:vm");
+const contextHookCheck = (function () {
+  const seen = [];
+  const sb = { console: { error: function () { seen.push([].slice.call(arguments)); } }, Error: Error, JSON: JSON, Date: Date, Promise: Promise, String: String, Array: Array, Object: Object, listeners: {} };
+  sb.self = sb; sb.window = sb;
+  sb.addEventListener = function (type, fn) { sb.listeners[type] = sb.listeners[type] || []; sb.listeners[type].push(fn); };
+  sb.fetch = function (url) {
+    if (url === "/boom") return Promise.reject(new Error("offline"));
+    return Promise.resolve({ ok: url !== "/bad", status: url === "/bad" ? 404 : 200, type: "basic" });
+  };
+  const pageFetch = sb.fetch;
+  vm.createContext(sb);
+  for (const f of ["core.js", "palette.js", "point.js", "point.js"]) vm.runInContext(fs.readFileSync(MOD(f), "utf8"), sb, { filename: f });
+  const log = sb.__annotatorContext;
+  assert.ok(log, "point.js hooks the page at load when a window exists");
+  assert.strictEqual(sb.__annotatorRawFetch, pageFetch, "the unwrapped fetch is kept for the overlay's own lookups");
+  assert.strictEqual(sb.listeners.error.length, 1, "a second copy of point.js adds no second error hook");
+
+  sb.console.error("boom", { code: 7 });
+  assert.strictEqual(seen.length, 1, "console.error still reaches the page's console, exactly once");
+  assert.match(log.errors.since(0)[0].message, /boom \{"code":7\}/);
+  sb.listeners.error[0]({ target: { src: "http://x/a.png", tagName: "IMG" } });
+  sb.listeners.error[0]({ target: sb, error: new Error("kaboom"), message: "kaboom" });
+  sb.listeners.unhandledrejection[0]({ reason: "nope" });
+  // Array.from: arrays built inside the sandbox belong to its realm, and strict
+  // deep-equal rejects a foreign Array prototype even when every value matches.
+  assert.deepStrictEqual(Array.from(log.errors.since(0), (e) => e.source), ["console.error", "uncaught", "unhandledrejection"]);
+
+  return Promise.all([
+    sb.fetch("/ok"),
+    sb.fetch("/bad"),
+    sb.fetch("/boom").then(function () { throw new Error("the rejection was swallowed"); }, function (e) { assert.strictEqual(e.message, "offline", "the app sees the rejection unchanged"); })
+  ]).then(function (res) {
+    assert.strictEqual(res[1].status, 404, "the app gets its own response object back");
+    assert.deepStrictEqual(Array.from(log.requests.since(0), (r) => [r.url, r.status]),
+      [["http://x/a.png", null], ["/bad", 404], ["/boom", null]], "failed image, 404 and network failure are logged; the 200 is not");
+  });
+})();
+
+// ---- Phase 3: Measure — LCP and server think-time ----
+// "Felt slow" vs "the server took 900ms". TTFB is always there same-origin;
+// Server-Timing only when the app sends the header (Tideswell does not, 2026-09-17).
+assert.strictEqual(core.ttfbOf({ requestStart: 100.2, responseStart: 340.9 }), 241);
+assert.strictEqual(core.ttfbOf({ requestStart: 0, responseStart: 0 }), null, "opaque cross-origin timing is null, never a fake 0ms");
+assert.strictEqual(core.ttfbOf(null), null);
+assert.deepStrictEqual(core.serverTimingOf({ serverTiming: [{ name: "db", duration: 812.4, description: "query" }, { name: "render", duration: 40 }] }),
+  [{ name: "db", ms: 812, desc: "query" }, { name: "render", ms: 40, desc: "" }]);
+assert.strictEqual(core.serverTimingOf({ serverTiming: [] }), null, "no header -> null, not an empty list that reads like a measurement");
+assert.strictEqual(core.serverTimingOf({}), null);
+assert.strictEqual(core.entryKey({ kind: "lcp", url: "http://localhost:3000/tasks?x=1" }), "lcp /tasks", "LCP pairs across runs by page");
+{
+  const r = core.compareRuns([{ kind: "lcp", url: "/tasks", ms: 900 }, { kind: "lcp", url: "/tasks", ms: 1000 }],
+                             [{ kind: "lcp", url: "/tasks", ms: 400 }, { kind: "lcp", url: "/tasks", ms: 420 }]);
+  assert.strictEqual(r.rows[0].key, "lcp /tasks");
+  assert.strictEqual(r.rows[0].verdict, "faster", "Compare reads LCP like any other ms metric");
+}
+{
+  const src = codeOf(fs.readFileSync(MOD("measure.js"), "utf8"));
+  assert.ok(/watch\("largest-contentful-paint", [\s\S]*?\}, true\);/.test(src), "LCP is observed buffered — recording starts long after the load it describes");
+  assert.ok(/rec\.ttfbMs = core\.ttfbOf\(entry\)/.test(src), "a server-hit nav carries its TTFB");
+}
+
+// ---- Phase 3: mark point ----
+assert.strictEqual(core.entryKey({ kind: "mark", label: "felt slow" }), null, "a mark is a timestamp, not a measurement");
+{
+  const r = core.compareRuns([{ kind: "mark", label: "a", t: 1 }, { kind: "action", url: "/a", ms: 10 }],
+                             [{ kind: "mark", label: "b", t: 2 }, { kind: "action", url: "/a", ms: 10 }]);
+  assert.deepStrictEqual(r.rows.map((x) => x.key), ["action /a"], "marks never become Compare rows");
+}
+{
+  const ui = codeOf(fs.readFileSync(MOD("ui.js"), "utf8"));
+  const idx = codeOf(fs.readFileSync(MOD("index.js"), "utf8"));
+  // Measure repaints row 2 on EVERY recorded entry. Re-appending the same panel
+  // detaches it, and a detached input loses focus mid-word.
+  assert.ok(/row2\.firstChild === node/.test(ui), "setModeTools leaves an already-showing node in place");
+  assert.ok(/data-ann-measure-label/.test(ui) && /"measure-mark"/.test(ui), "the measure panel has a label field and a Mark button");
+  assert.ok(/window\.__annotatorMark = /.test(idx), "agent-side __annotatorMark exists");
+  assert.ok(/e\.code === "KeyM"/.test(idx), "Alt+M matches on code, not key");
+}
+
 Promise.all([
+  contextHookCheck,
   // Raced against a deadline, because the failure this suite hit for real was a
   // promise that NEVER settled: Node then exits 0 with no output, and a test
   // that silently did not run looks exactly like a test that passed. A hang has

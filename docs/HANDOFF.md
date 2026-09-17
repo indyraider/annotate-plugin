@@ -76,8 +76,11 @@ own sections. Zero page errors.
 
 ## Resume here
 
-Phase 1b is complete and merged. **The next build is not yet planned** — Compare mode is spec
-§8 Phase 3, the MCP server and licensing are Phase 4. Write a plan before touching either.
+Phase 3 is complete: Compare (see PHASE3-LEDGER.md) and the Point / Measure upgrades
+(source lookup on React 19, click-time screenshots, tree walk, multi-select, recent errors,
+LCP, TTFB, mark point). Voice was dropped with evidence. **Phase 4 is next** (MCP server,
+framework adapters, install, licensing) and is blocked on the licensing question below.
+Write a plan before touching it. The Phase 3 browser gate is `gates/phase3.gate.cjs`.
 
 ---
 
@@ -87,7 +90,7 @@ Phase 1b is complete and merged. **The next build is not yet planned** — Compa
    reads **conflict** at 4px apart (ratio 0.33 of the nearest token; the cutoff is 0.5). That
    felt right at that scale. On a coarse scale where 4px is genuinely noise it will nag. Taste,
    not reasoning.
-2. **A link cannot be favourited.** See below — needs a design decision, not an improvisation.
+2. ~~A link cannot be favourited.~~ **Fixed 2026-08-07:** Alt+click pins without navigating.
 3. ~~Does `serve.cjs` retire?~~ **DECIDED 2026-08-07: retired.** `serve.cjs`, `serve.test.cjs`
    and the `overlay.js` loader are deleted. One boot path: `addInitScript` from disk. It costs
    a page reload and an RCE-equivalent tool call, both accepted knowingly.
@@ -96,17 +99,10 @@ Phase 1b is complete and merged. **The next build is not yet planned** — Compa
 
 ## Open problems
 
-**1. A link can't be favourited — pinning it also navigates away.** Study deliberately never
-calls `preventDefault` (making the page inert was a Phase 1a bug; studying a site means moving
-through it). So clicking a CTA pins it *and* follows the href, and the navigation wipes the
-overlay before anything can be saved. The primary button is the most-studied element on the web
-and it is the one thing this tool cannot capture. No modifier pins without navigating. Adding
-one is a design decision.
-
-**2. Licensing.** How to enforce a paid tier in a tool that runs entirely on the user's machine
+**1. Licensing.** How to enforce a paid tier in a tool that runs entirely on the user's machine
 when half of it is public MIT. Spec §10.5. Unanswered; blocks Phase 4, not anything sooner.
 
-**3. The ES5 rule has no test.** `overlay/*.js` is supposed to be ES5 because it is `eval`'d
+**2. The ES5 rule has no test.** `overlay/*.js` is supposed to be ES5 because it is `eval`'d
 into arbitrary pages. Nothing asserts it. Left deliberately: every browser this runs in handles
 modern syntax, so the rule has no live failure mode — but a guard would need to strip comments
 first, because three modules contain the words "let", "class" and "const" in prose.

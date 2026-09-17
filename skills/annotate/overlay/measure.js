@@ -25,6 +25,7 @@
     // against whatever happened in the last few seconds. This one only resets
     // when recording restarts.
     var session = [], sessionDropped = 0;
+    var push = null, markSeq = 0;                     // push is set by start(); mark() needs it
 
     // Next starts the `?_rsc=` navigation request BEFORE it pushes the new URL, so detection
     // looks BACKWARD from the URL change by this much. (Measured live: the request began 45ms
@@ -40,12 +41,13 @@
       // and into the session log Compare reads. Wrapping push HERE rather than at
       // the six call sites below means a future entry kind cannot forget to join
       // in. Same 500 cap, and it counts its own drops for the same reason.
-      session = []; sessionDropped = 0;
+      session = []; sessionDropped = 0; markSeq = 0;
       var buf = { push: function (e) {
         session.push(e);
         if (session.length > 500) { session.shift(); sessionDropped++; }
         perfBuf.push(e);
       } };
+      push = buf.push;
       var obs = [], pendingNav = null, navTimer = null;
       var stamp = function () { return Math.round(performance.now()); };
 
@@ -58,14 +60,17 @@
         rec.__done = true;
         if (pendingNav === rec) pendingNav = null;
         clearTimeout(navTimer);
-        if (entry) { rec.servedFromCache = false; rec.rscMs = Math.round(entry.duration); }
+        if (entry) {
+          rec.servedFromCache = false; rec.rscMs = Math.round(entry.duration);
+          rec.ttfbMs = core.ttfbOf(entry); rec.serverTiming = core.serverTimingOf(entry);
+        }
         delete rec.__done;
         buf.push(rec); notify();
       }
       function onUrlChange(from, to) {
         if (from === to) return;
         var t0 = performance.now();
-        var rec = { t: stamp(), kind: "nav", from: from, to: to, servedFromCache: true, rscMs: null, toPaintMs: null };
+        var rec = { t: stamp(), kind: "nav", from: from, to: to, servedFromCache: true, rscMs: null, ttfbMs: null, serverTiming: null, toPaintMs: null };
         requestAnimationFrame(function () {
           requestAnimationFrame(function () { rec.toPaintMs = Math.round(performance.now() - t0); });
         });
@@ -120,10 +125,10 @@
       // --- images, layout shifts, long tasks ---
       // Each observer is wrapped individually: an entry type this browser does not support
       // must cost us that one signal, not the whole mode.
-      var watch = function (type, handler) {
+      var watch = function (type, handler, buffered) {
         try {
           var o = new PerformanceObserver(handler);
-          o.observe({ type: type, buffered: false });
+          o.observe({ type: type, buffered: !!buffered });
           obs.push(o);
         } catch (e) {}
       };
@@ -142,6 +147,7 @@
             ttfbMs: Math.round(e.responseStart ? e.responseStart - e.startTime : 0),
             transferSize: e.transferSize, decodedBodySize: e.decodedBodySize,
             status: e.responseStatus != null ? e.responseStatus : null,
+            serverTiming: core.serverTimingOf(e),
           });
         });
         notify();
@@ -158,6 +164,25 @@
         notify();
       });
 
+      // --- largest contentful paint ---
+      // Buffered, because recording starts long after the load LCP describes.
+      // One entry per recording, updated in place as later candidates arrive:
+      // pushing every candidate would let Compare average the hero image with the
+      // heading that painted before it.
+      // ponytail: an entry drained by the watch loop before a later candidate
+      // lands keeps the earlier value on the agent's side. LCP settles within a
+      // few seconds of load and the loop drains every ~25s, so it rarely bites.
+      var lcpRec = null;
+      var loadPath = (performance.getEntriesByType("navigation")[0] || {}).name || location.href;
+      watch("largest-contentful-paint", function (list) {
+        var all = list.getEntries(), e = all[all.length - 1];
+        if (!e) return;
+        var ms = Math.round(e.startTime), el = e.element ? e.element.tagName.toLowerCase() : null;
+        if (lcpRec) { lcpRec.t = ms; lcpRec.ms = ms; lcpRec.size = e.size; lcpRec.element = el; }
+        else { lcpRec = { t: ms, kind: "lcp", url: loadPath, ms: ms, size: e.size, element: el }; buf.push(lcpRec); }
+        notify();
+      }, true);
+
       perfStop = function () {
         obs.forEach(function (o) { try { o.disconnect(); } catch (e) {} });
         window.fetch = origFetch;
@@ -165,7 +190,18 @@
         window.removeEventListener("popstate", onPop);
         clearTimeout(navTimer);
       };
-      console.log("[annotate] measure mode ON — recording navigations, actions, images, shifts, long tasks");
+      console.log("[annotate] measure mode ON — recording navigations, actions, images, LCP, shifts, long tasks");
+    }
+
+    // A labelled point in the trace: "this bit felt slow" becomes a timestamp the
+    // agent reads against the entries around it, not a sentence to decode.
+    // null when not recording: a mark outside a recording marks nothing.
+    function mark(label) {
+      if (!perfStop) return null;
+      var text = String(label == null ? "" : label).trim().slice(0, 80);
+      var e = { t: Math.round(performance.now()), kind: "mark", label: text || ("mark " + (++markSeq)) };
+      push(e); notify();
+      return e;
     }
 
     function stop() { if (perfStop) { perfStop(); perfStop = null; } }
@@ -191,7 +227,7 @@
       return out;
     }
 
-    return { start: start, stop: stop, take: take, size: size, sessionTake: sessionTake };
+    return { start: start, stop: stop, take: take, size: size, sessionTake: sessionTake, mark: mark };
   }
 
   return { create: create };

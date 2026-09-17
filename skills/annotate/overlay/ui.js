@@ -355,6 +355,10 @@
     // file. Passing null collapses the row rather than leaving an empty strip
     // of chrome sitting over the page being studied.
     function setModeTools(node) {
+      // Handing over the node that is already showing is a repaint, not a swap.
+      // Detaching it would blur a field mid-typing, and Measure repaints on every
+      // recorded entry.
+      if (node && row2.childNodes.length === 1 && row2.firstChild === node) { row2.style.display = "block"; return; }
       row2.textContent = "";
       if (!node) { row2.style.display = "none"; return; }
       row2.appendChild(node);
@@ -427,6 +431,26 @@
     comparePanel.append(cmpBar, cmpStatus, cmpRows);
 
     function setCompareStatus(text) { cmpStatus.textContent = text || ""; }
+
+    // ---- measure panel: the running status, plus a labelled mark point ----
+    var measurePanel = document.createElement("div"); measurePanel.className = "__ann-ui";
+    Object.assign(measurePanel.style, { display: "flex", flexDirection: "column", gap: "6px", width: "380px", font: "12px " + SANS });
+    var msStatus = document.createElement("div");
+    Object.assign(msStatus.style, { color: pal.text2, font: "12px " + SANS });
+    var msBar = document.createElement("div");
+    Object.assign(msBar.style, { display: "flex", gap: "6px" });
+    var msLabel = document.createElement("input"); msLabel.type = "text";
+    msLabel.placeholder = "What just felt slow?  (Alt+M marks without a label)";
+    msLabel.setAttribute("data-ann-measure-label", "");
+    Object.assign(msLabel.style, { flex: "1", minWidth: "0", font: "12px " + SANS, padding: "6px 8px", borderRadius: "6px", border: "1px solid " + pal.border, background: pal.surface2, color: pal.text });
+    msBar.append(msLabel, cmpButton("measure-mark", "Mark"));
+    measurePanel.append(msStatus, msBar);
+    function setMeasureStatus(text) { msStatus.textContent = text || ""; }
+    var measureMarkHandler = null;
+    function onMeasureMark(fn) { measureMarkHandler = fn; }
+    function fireMark() { if (measureMarkHandler) measureMarkHandler(msLabel.value); msLabel.value = ""; }
+    onAct("measure-mark", fireMark);
+    msLabel.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); fireMark(); } });
     function isRegressionsOnly() { return !!cmpFilter.checked; }
     // Rows arrive as plain {label, detail, tone} — no verdict enum, no delta
     // maths, nothing this file could come to depend on.
@@ -497,6 +521,9 @@
       onGrantFonts: fonts.onGrantFonts,
       onChange: onChange,
       comparePanel: comparePanel,
+      measurePanel: measurePanel,
+      setMeasureStatus: setMeasureStatus,
+      onMeasureMark: onMeasureMark,
       setCompareStatus: setCompareStatus,
       setCompareRows: setCompareRows,
       isRegressionsOnly: isRegressionsOnly,
