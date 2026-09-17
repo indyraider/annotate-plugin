@@ -70,6 +70,31 @@ check("a comment on a client input resolves into the app's code, not node_module
   assert.ok([src].concat(src.usedFrom).some((f) => f.file === "src/components/auth/login-form.tsx"), "login-form.tsx is in the chain");
 });
 
+check("the screenshot is taken at click time, before the comment box exists", async (page) => {
+  // A red square that disappears the instant the comment box appears. If it is
+  // in the shot, the shot was taken before the box opened.
+  await page.evaluate(() => {
+    const d = document.createElement("div");
+    d.style.cssText = "position:fixed;right:0;top:0;width:80px;height:80px;background:rgb(255,0,0);z-index:2147483646;pointer-events:none";
+    document.body.appendChild(d);
+    new MutationObserver((_, obs) => {
+      if (document.querySelector(".__ann-ui textarea")) { d.remove(); obs.disconnect(); }
+    }).observe(document.body, { childList: true });
+  });
+  const a = await comment(page, "main h1", "gate: shot");
+  assert.strictEqual(a.hasShot, true, "hasShot");
+  const px = await page.evaluate(async (id) => {
+    const data = window.__annotatorImageTake(id + "-shot");
+    if (!data) return null;
+    const img = new Image(); img.src = data; await img.decode();
+    const c = document.createElement("canvas"); c.width = img.width; c.height = img.height;
+    const g = c.getContext("2d"); g.drawImage(img, 0, 0);
+    return Array.from(g.getImageData(img.width - 40, 40, 1, 1).data);
+  }, a.id);
+  assert.ok(px, "the shot is retrievable as <id>-shot");
+  assert.ok(px[0] > 200 && px[1] < 60 && px[2] < 60, "the transient red square is in the shot, pixel " + px);
+});
+
 // ---- checks end ----
 
 (async () => {
@@ -79,6 +104,8 @@ check("a comment on a client input resolves into the app's code, not node_module
   const pageErrors = [];
   page.on("pageerror", (e) => pageErrors.push(e.message));
   for (const f of FILES) await ctx.addInitScript({ path: path.join(OVERLAY, f) });
+  // Same binding, same arguments, as SKILL.md's boot snippet.
+  await ctx.exposeBinding("__annotatorShoot", async ({ page }) => "data:image/jpeg;base64," + (await page.screenshot({ type: "jpeg", quality: 70, scale: "css" })).toString("base64"));
   // ---- boot extras ----
   await page.goto(BASE + "/login", { waitUntil: "networkidle" });
   await page.evaluate(() => window.__annotatorMods.index.setup());

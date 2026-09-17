@@ -172,9 +172,9 @@
 
     // ---- comment box, badge, paste/drop ----
     function btn(label, primary) { var b = document.createElement("button"); b.textContent = label; Object.assign(b.style, { background: primary ? pal.accent : pal.hover, color: primary ? pal.accentFg : pal.text, border: primary ? "none" : "1px solid " + pal.border, borderRadius: "6px", padding: "5px 10px", font: "600 12px " + SANS, cursor: "pointer" }); return b; }
-    var box = null, target = null, pendingImage = null;
-    function openComment(el, x, y) {
-      closeComment(); target = el;
+    var box = null, target = null, pendingImage = null, pendingShot = null;
+    function openComment(el, x, y, shot) {
+      closeComment(); target = el; pendingShot = shot || null;
       box = document.createElement("div"); box.className = "__ann-ui";
       Object.assign(box.style, { position: "fixed", left: Math.min(x, window.innerWidth - 260) + "px", top: Math.min(y, window.innerHeight - 150) + "px", zIndex: Z, width: "244px", background: pal.elevated, border: "1px solid " + pal.border, borderRadius: "8px", padding: "8px", boxShadow: "0 10px 34px rgba(0,0,0,.42)", font: "12px " + SANS, color: pal.text });
       var ta = document.createElement("textarea"); ta.placeholder = "What should change here?  (⌘/Ctrl+Enter to save)";
@@ -240,13 +240,13 @@
       Object.assign(hint.style, { flex: "1", font: "10px " + SANS, color: pal.text3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" });
       hint.textContent = IDLE_HINT;
       var cancel = btn("Cancel", false), saveBtn = btn("Save", true);
-      var submit = function () { var v = ta.value.trim(); if (v) record(target, v, pendingImage); closeComment(); };
+      var submit = function () { var v = ta.value.trim(); if (v) record(target, v, pendingImage, pendingShot); closeComment(); };
       cancel.onclick = closeComment; saveBtn.onclick = submit;
       ta.addEventListener("keydown", function (e) { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); submit(); } });
       row.append(hint, cancel, saveBtn);
       box.append(ta, thumbWrap, row); document.body.appendChild(box); ta.focus();
     }
-    function closeComment() { if (box) { box.remove(); box = null; target = null; pendingImage = null; } }
+    function closeComment() { if (box) { box.remove(); box = null; target = null; pendingImage = null; } pendingShot = null; }
 
     // Comment-pin marker: rounded bubble with one pointed corner (bottom-left) aimed at
     // the element, wrapping an accent chip with the number — like a map/comment pin.
@@ -261,11 +261,12 @@
 
     // seq lives here, not in index.js: no other mode assigns annotation ids.
     var seq = window.__annotations.reduce(function (m, a) { return Math.max(m, a.n || 0); }, 0);
-    function record(el, comment, image) {
+    function record(el, comment, image, shot) {
       seq += 1;
-      var a = { id: "a" + seq, n: seq, selector: buildSelector(el), descriptor: describe(el), comment: comment, url: location.pathname + location.search, ts: new Date().toISOString(), status: "resolving", hasImage: !!image };
-      // The image never rides along in the annotation — the agent pulls it by id.
+      var a = { id: "a" + seq, n: seq, selector: buildSelector(el), descriptor: describe(el), comment: comment, url: location.pathname + location.search, ts: new Date().toISOString(), status: "resolving", hasImage: !!image, hasShot: !!shot };
+      // Neither image rides along in the annotation — the agent pulls each by id.
       if (image) putImage(a.id, image);
+      if (shot) putImage(a.id + "-shot", shot);
       // Saved, persisted and badged NOW, so a navigation in the next second
       // cannot lose the comment. Handed to the agent only once the lookup
       // settles, so the agent never reads a source that is still on its way.
@@ -292,13 +293,30 @@
     // native <a> nav + middle-click fire on click/auxclick (preventDefault). Click then opens the box.
     function blockNav(e) { if (state.mode !== "on") return; if (e.shiftKey) return; if (ui.isOurs(e.target)) return; e.stopPropagation(); }
     function onAuxclick(e) { if (state.mode !== "on") return; if (e.shiftKey) return; if (ui.isOurs(e.target)) return; e.preventDefault(); e.stopPropagation(); }
+    // The screenshot binding the boot snippet registers (Playwright's
+    // exposeBinding). Absent on the fallback boot path, and then comments simply
+    // carry no shot and the agent screenshots at processing time as before.
+    var SHOT_WAIT_MS = 1500;
+    function shoot() {
+      if (typeof window.__annotatorShoot !== "function") return Promise.resolve(null);
+      var giveUp = new Promise(function (resolve) { setTimeout(function () { resolve(null); }, SHOT_WAIT_MS); });
+      var shot = window.__annotatorShoot().then(null, function () { return null; });
+      return Promise.race([shot, giveUp]);
+    }
     function onClick(e) {
       if (state.mode !== "on") return;
       if (e.shiftKey) return;                        // peek: let the app handle this click
       if (ui.isOurs(e.target)) return;
       e.preventDefault(); e.stopPropagation();
-      ui.hideInspector();
-      openComment(e.target, e.clientX, e.clientY);
+      var el = e.target, x = e.clientX, y = e.clientY;
+      // Shot first, box second. The tooltip or open menu Matt is pointing at is on
+      // screen NOW; the box would cover it, and processing time is far too late.
+      // The highlight ring stays in the shot on purpose: it marks what was clicked.
+      closeComment(); ui.hideInspector();
+      shoot().then(function (shot) {
+        if (state.mode !== "on") return;             // left the mode while the shot was taken
+        openComment(el, x, y, shot);
+      });
     }
     // Escape only matters while the comment box can be open, i.e. while enabled.
     function onKeydown(e) { if (e.key === "Escape" && box) closeComment(); }

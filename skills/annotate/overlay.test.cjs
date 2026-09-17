@@ -2013,6 +2013,19 @@ assert.strictEqual(core.firstAppFrame(null), null, "endpoint returned nothing ->
   assert.ok(/function wake\(\)/.test(codeOf(idx)) && /wake: wake/.test(codeOf(idx)), "index.js gives modes a wake() that is separate from save()");
 }
 
+// ---- Phase 3: click-time screenshot ----
+// Taken when Matt clicks, not when the agent gets round to it: by then a tooltip
+// or an open dropdown is gone, which made those states impossible to annotate.
+{
+  const src = codeOf(fs.readFileSync(MOD("point.js"), "utf8"));
+  const skill = fs.readFileSync(path.join(__dirname, "SKILL.md"), "utf8");
+  assert.ok(/shoot\(\)\.then\(function \(shot\) \{[\s\S]{0,300}openComment\(el, x, y, shot\)/.test(src),
+    "the comment box opens only AFTER the screenshot resolves — opened first, the box covers what was clicked");
+  assert.ok(/putImage\(a\.id \+ "-shot", shot\)/.test(src), "the shot is stored under <id>-shot, never inside the annotation");
+  assert.strictEqual((skill.match(/exposeBinding\("__annotatorShoot"/g) || []).length, 2,
+    "both boot snippets in SKILL.md register the screenshot binding");
+}
+
 Promise.all([
   // Raced against a deadline, because the failure this suite hit for real was a
   // promise that NEVER settled: Node then exits 0 with no output, and a test

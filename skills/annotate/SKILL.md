@@ -24,6 +24,7 @@ your context and nothing is fetched over the network.
      const FILES = ["core.js","palette.js","fontpicker.js","fontspanel.js","ui.js","point.js","measure.js","study-motion.js","study.js","fonts.js","index.js"];
      for (const f of FILES) await page.context().addInitScript({ path: "<this skill's directory>/overlay/" + f });
      try { await page.context().grantPermissions(["local-fonts"]); } catch (e) {}
+     try { await page.context().exposeBinding("__annotatorShoot", async ({ page }) => "data:image/jpeg;base64," + (await page.screenshot({ type: "jpeg", quality: 70, scale: "css" })).toString("base64")); } catch (e) {}
      await page.reload({ waitUntil: "domcontentloaded" });
      return await page.evaluate(() => { window.__annotatorMods.index.setup(); return "ready"; });
    }` })
@@ -243,6 +244,7 @@ if you need a real answer for that element.
     const FILES = ["core.js","palette.js","fontpicker.js","fontspanel.js","ui.js","point.js","measure.js","study-motion.js","study.js","fonts.js","index.js"];
     for (const f of FILES) await page.context().addInitScript({ path: "<this skill's directory>/overlay/" + f });
     try { await page.context().grantPermissions(["local-fonts"]); } catch (e) {}
+    try { await page.context().exposeBinding("__annotatorShoot", async ({ page }) => "data:image/jpeg;base64," + (await page.screenshot({ type: "jpeg", quality: 70, scale: "css" })).toString("base64")); } catch (e) {}
     await page.reload({ waitUntil: "domcontentloaded" });
     return await page.evaluate(() => { window.__annotatorMods.index.setup(); return "ready"; });
   }` })
