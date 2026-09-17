@@ -37,7 +37,18 @@
       // scrolls; an attribute plus a rule marks every element in the group,
       // follows them through scroll and reflow for free, and comes off by
       // removing the attribute.
-      + "[data-ann-font-pick]{outline:2px solid " + pal.accent + " !important;outline-offset:1px}"
+      + "[data-ann-font-pick]{outline:1.5px solid " + pal.accent + " !important;outline-offset:2px}"
+      // What a Fonts click WOULD grab, shown while hovering: fainter and dashed,
+      // so it never reads as already picked.
+      + "[data-ann-font-peek]:not([data-ann-font-pick]){outline:1px dashed rgba(255,111,94,0.7) !important;outline-offset:2px}"
+      // The hover box's ring: a gradient drifting round the border, hollowed out
+      // by a mask so the element underneath keeps its real colours.
+      + "@keyframes __ann-drift{to{background-position:300% 0}}"
+      + ".__ann-ring{position:absolute;inset:0;padding:1.5px;border-radius:3px;"
+      + "background:linear-gradient(90deg," + pal.accent + ",#ffb35e,#ff5e9e," + pal.accent + ");background-size:300% 100%;"
+      + "animation:__ann-drift 3s linear infinite;"
+      + "-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude}"
+      + "@media (prefers-reduced-motion:reduce){.__ann-ring{animation:none}.__ann-hl{transition:none !important}}"
       // Keyboard focus, for the whole overlay rather than for one panel. Every
       // control here is built with inline styles, which cannot express
       // :focus-visible at all — so until now nothing in this tool showed where
@@ -64,8 +75,19 @@
       + ".__ann-ui input[type=range]::-moz-range-thumb{width:12px;height:12px;border-radius:50%;background:" + pal.accent + ";border:0;cursor:pointer}";
     document.head.appendChild(cursorStyle);
 
-    var hl = document.createElement("div"); hl.className = "__ann-ui";
-    Object.assign(hl.style, { position: "fixed", zIndex: Z - 1, pointerEvents: "none", border: "1.5px solid " + pal.accent, background: pal.accentSoft, display: "none", borderRadius: "5px" });
+    // The hover box sits a few px outside the element, glides between targets,
+    // and carries a small name tag. No fill: tinting the page is what made the
+    // old box look flat, and it changed the colours being judged.
+    var HL_PAD = 3, HL_GLIDE = "transform 120ms ease-out, width 120ms ease-out, height 120ms ease-out";
+    var hl = document.createElement("div"); hl.className = "__ann-ui __ann-hl";
+    Object.assign(hl.style, { position: "fixed", left: "0", top: "0", zIndex: Z - 1, pointerEvents: "none", display: "none",
+      borderRadius: "3px", boxShadow: "0 0 12px rgba(255,111,94,0.28)",
+      transition: HL_GLIDE });
+    var ring = document.createElement("div"); ring.className = "__ann-ui __ann-ring";
+    var tag = document.createElement("div"); tag.className = "__ann-ui";
+    Object.assign(tag.style, { position: "absolute", left: "-1.5px", padding: "2px 6px", borderRadius: "3px", whiteSpace: "nowrap",
+      background: pal.accent, color: pal.accentFg, font: "500 10.5px/1.3 " + SANS });
+    hl.appendChild(ring); hl.appendChild(tag);
     document.body.appendChild(hl);
     // One owner for the crosshair. It used to be two lines inside point.js, so
     // every later mode that wanted it either duplicated them or, as Fonts did,
@@ -73,7 +95,21 @@
     function setCrosshair(on) {
       document.documentElement.classList[on ? "add" : "remove"]("__ann-cross");
     }
-    function showHighlight(el) { var r = el.getBoundingClientRect(); Object.assign(hl.style, { display: "block", left: r.left + "px", top: r.top + "px", width: r.width + "px", height: r.height + "px" }); }
+    function showHighlight(el) {
+      var r = el.getBoundingClientRect(), cs = getComputedStyle(el);
+      // Appearing from hidden must not glide in from wherever the box was last.
+      var wasHidden = hl.style.display === "none";
+      if (wasHidden) hl.style.transition = "none";
+      Object.assign(hl.style, { display: "block",
+        transform: "translate(" + (r.left - HL_PAD) + "px," + (r.top - HL_PAD) + "px)",
+        width: (r.width + HL_PAD * 2) + "px", height: (r.height + HL_PAD * 2) + "px" });
+      var family = String(cs.fontFamily || "").split(",")[0].replace(/["']/g, "").trim();
+      tag.textContent = el.tagName.toLowerCase() + (family ? " · " + family + " " + Math.round(parseFloat(cs.fontSize) || 0) + "px" : "");
+      // Above the box, unless that would put it off the top of the screen.
+      if (r.top < 24) { tag.style.top = "calc(100% + 3px)"; tag.style.bottom = ""; }
+      else { tag.style.bottom = "calc(100% + 3px)"; tag.style.top = ""; }
+      if (wasHidden) { void hl.offsetWidth; hl.style.transition = HL_GLIDE; }
+    }
     function hideHighlight() { hl.style.display = "none"; }
 
     // Inspector card — DevTools-style computed-style readout that follows the cursor.

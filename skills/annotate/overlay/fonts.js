@@ -593,9 +593,26 @@
       return slot;
     }
 
+    // While hovering, dash-outline the look-alikes a click would also grab, so
+    // "one link or the whole nav?" is answered before the click. Recomputed only
+    // when the target changes, not on every pixel of movement.
+    var PEEK_ATTR = "data-ann-font-peek", peekFor = null;
+    function clearPeek() {
+      peekFor = null;
+      var marked = document.querySelectorAll("[" + PEEK_ATTR + "]");
+      for (var i = 0; i < marked.length; i++) marked[i].removeAttribute(PEEK_ATTR);
+    }
+    function peek(el) {
+      if (el === peekFor) return;
+      clearPeek();
+      peekFor = el;
+      if (owner.get(el)) return;   // already in a card; its outline says so
+      similarIn(el).forEach(function (c) { if (c !== el) c.setAttribute(PEEK_ATTR, ""); });
+    }
     function onMousemove(e) {
       if (ui.isOurs(e.target)) return;
       ui.showHighlight(e.target);
+      peek(e.target);
     }
     // Study's convention, deliberately identical: a plain click stops nothing
     // (a font preview you cannot scroll or navigate through is not a preview),
@@ -605,6 +622,7 @@
       if (e.shiftKey) return;
       if (ui.isOurs(e.target)) return;
       if (e.altKey) { e.preventDefault(); e.stopPropagation(); }
+      clearPeek();
       pick(e.target);
       if (notify) notify();
     }
@@ -628,6 +646,7 @@
       document.removeEventListener("mousemove", onMousemove, true);
       document.removeEventListener("click", onClick, true);
       ui.hideHighlight();
+      clearPeek();
       // The outline is a picking aid, not a result — the SWAPS stay when you
       // leave the mode, the marks do not.
       focusSlot(null);
