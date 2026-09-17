@@ -150,6 +150,26 @@ check("a client navigation that hits the server carries ttfbMs", async (page) =>
   console.log("     " + hit.to.replace(/^https?:\/\/[^/]+/, "") + " rscMs " + hit.rscMs + " ttfbMs " + hit.ttfbMs);
 });
 
+check("Mark drops labelled markers from the API, Alt+M and the toolbar, without stealing focus", async (page) => {
+  await setMode(page, "measure");
+  await page.evaluate(() => window.__annotatorPerfTake());
+  await page.evaluate(() => window.__annotatorMark("gate api mark"));
+  await page.fill("[data-ann-measure-label]", "gate typed");
+  await page.evaluate(() => window.__annotatorMark("while typing"));      // notify() repaints row 2
+  assert.ok(await page.evaluate(() => document.activeElement && document.activeElement.hasAttribute("data-ann-measure-label")),
+    "the label field keeps focus through a repaint");
+  await page.click('[data-ann-act="measure-mark"]');
+  assert.strictEqual(await page.inputValue("[data-ann-measure-label]"), "", "the field clears after marking");
+  await page.evaluate(() => document.activeElement.blur());
+  await page.keyboard.press("Alt+KeyM");
+  const marks = (await page.evaluate(() => window.__annotatorPerfTake())).filter((e) => e.kind === "mark").map((e) => e.label);
+  assert.deepStrictEqual(marks, ["gate api mark", "while typing", "gate typed", "mark 1"]);
+  // There is no "off" tab: clicking the active tab is how you leave a mode.
+  await page.evaluate(() => document.querySelector('[data-ann-mode="measure"]').click());
+  assert.strictEqual(await page.evaluate(() => window.__annotator.mode), "off");
+  assert.strictEqual(await page.evaluate(() => window.__annotatorMark("after")), null, "no mark outside a recording");
+});
+
 // ---- checks end ----
 
 (async () => {

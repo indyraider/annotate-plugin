@@ -25,6 +25,7 @@
     // against whatever happened in the last few seconds. This one only resets
     // when recording restarts.
     var session = [], sessionDropped = 0;
+    var push = null, markSeq = 0;                     // push is set by start(); mark() needs it
 
     // Next starts the `?_rsc=` navigation request BEFORE it pushes the new URL, so detection
     // looks BACKWARD from the URL change by this much. (Measured live: the request began 45ms
@@ -40,12 +41,13 @@
       // and into the session log Compare reads. Wrapping push HERE rather than at
       // the six call sites below means a future entry kind cannot forget to join
       // in. Same 500 cap, and it counts its own drops for the same reason.
-      session = []; sessionDropped = 0;
+      session = []; sessionDropped = 0; markSeq = 0;
       var buf = { push: function (e) {
         session.push(e);
         if (session.length > 500) { session.shift(); sessionDropped++; }
         perfBuf.push(e);
       } };
+      push = buf.push;
       var obs = [], pendingNav = null, navTimer = null;
       var stamp = function () { return Math.round(performance.now()); };
 
@@ -191,6 +193,17 @@
       console.log("[annotate] measure mode ON — recording navigations, actions, images, LCP, shifts, long tasks");
     }
 
+    // A labelled point in the trace: "this bit felt slow" becomes a timestamp the
+    // agent reads against the entries around it, not a sentence to decode.
+    // null when not recording: a mark outside a recording marks nothing.
+    function mark(label) {
+      if (!perfStop) return null;
+      var text = String(label == null ? "" : label).trim().slice(0, 80);
+      var e = { t: Math.round(performance.now()), kind: "mark", label: text || ("mark " + (++markSeq)) };
+      push(e); notify();
+      return e;
+    }
+
     function stop() { if (perfStop) { perfStop(); perfStop = null; } }
 
     // Mirrors __annotatorDrain for perf entries; index.js calls notify() itself
@@ -214,7 +227,7 @@
       return out;
     }
 
-    return { start: start, stop: stop, take: take, size: size, sessionTake: sessionTake };
+    return { start: start, stop: stop, take: take, size: size, sessionTake: sessionTake, mark: mark };
   }
 
   return { create: create };

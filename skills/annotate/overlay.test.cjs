@@ -2118,6 +2118,24 @@ assert.strictEqual(core.entryKey({ kind: "lcp", url: "http://localhost:3000/task
   assert.ok(/rec\.ttfbMs = core\.ttfbOf\(entry\)/.test(src), "a server-hit nav carries its TTFB");
 }
 
+// ---- Phase 3: mark point ----
+assert.strictEqual(core.entryKey({ kind: "mark", label: "felt slow" }), null, "a mark is a timestamp, not a measurement");
+{
+  const r = core.compareRuns([{ kind: "mark", label: "a", t: 1 }, { kind: "action", url: "/a", ms: 10 }],
+                             [{ kind: "mark", label: "b", t: 2 }, { kind: "action", url: "/a", ms: 10 }]);
+  assert.deepStrictEqual(r.rows.map((x) => x.key), ["action /a"], "marks never become Compare rows");
+}
+{
+  const ui = codeOf(fs.readFileSync(MOD("ui.js"), "utf8"));
+  const idx = codeOf(fs.readFileSync(MOD("index.js"), "utf8"));
+  // Measure repaints row 2 on EVERY recorded entry. Re-appending the same panel
+  // detaches it, and a detached input loses focus mid-word.
+  assert.ok(/row2\.firstChild === node/.test(ui), "setModeTools leaves an already-showing node in place");
+  assert.ok(/data-ann-measure-label/.test(ui) && /"measure-mark"/.test(ui), "the measure panel has a label field and a Mark button");
+  assert.ok(/window\.__annotatorMark = /.test(idx), "agent-side __annotatorMark exists");
+  assert.ok(/e\.code === "KeyM"/.test(idx), "Alt+M matches on code, not key");
+}
+
 Promise.all([
   contextHookCheck,
   // Raced against a deadline, because the failure this suite hit for real was a

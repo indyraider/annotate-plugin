@@ -115,7 +115,8 @@
       // these strings exist; it draws the node it is handed.
       if (m === "measure") {
         uiHandles.setClickHint("Passes through (recording)");
-        uiHandles.setModeTools(uiHandles.toolsText("Recording — clicks pass straight through · " + measureMode.size() + " entries"));
+        uiHandles.setMeasureStatus("Recording — clicks pass straight through · " + measureMode.size() + " entries");
+        uiHandles.setModeTools(uiHandles.measurePanel);
       } else if (m === "study") {
         uiHandles.setClickHint("Pin the readout");
         uiHandles.setModeTools(uiHandles.favPanel);
@@ -275,6 +276,9 @@
     uiHandles.onAct("cmp-run", runCompare);
     uiHandles.onAct("cmp-filter", function () { if (loadBaseline()) runCompare(); });
 
+    // ---- Measure: mark point ----
+    uiHandles.onMeasureMark(function (label) { measureMode.mark(label); });
+
     // ui.js only knows it collected a note and a comma-separated tags string —
     // it has no idea a "study mode" or a "favourite" concept exists. index.js
     // is the one that turns that into the real pin-and-record action below.
@@ -318,6 +322,8 @@
     // moment this needs to fire to turn it back on.
     document.addEventListener("keydown", function (e) {
       if (e.altKey && (e.key === "a" || e.key === "A")) { e.preventDefault(); toggle(); }
+      // e.code, not e.key: Option+M on a Mac puts "µ" in e.key.
+      else if (e.altKey && e.code === "KeyM" && state.mode === "measure") { e.preventDefault(); measureMode.mark(""); }
     }, true);
 
     // ---- long-poll API for the skill's watch loop ----
@@ -328,6 +334,8 @@
       updateToolbar();
       return out;
     };
+    // Drops a labelled marker into the recording. null when Measure is not on.
+    window.__annotatorMark = function (label) { return measureMode.mark(label); };
     window.__annotatorWait = function (timeoutMs) {
       return new Promise(function (resolve) {
         if (window.__annotations.some(function (a) { return a.status === "new"; })) return resolve(window.__annotatorDrain());

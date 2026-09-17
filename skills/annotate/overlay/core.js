@@ -118,6 +118,7 @@
     if (e.kind === "img") return "img " + normalisePath(e.url);
     if (e.kind === "lcp") return "lcp " + normalisePath(e.url);
     if (e.kind === "dropped") return null;              // bookkeeping, not a measurement
+    if (e.kind === "mark") return null;                 // a timestamp to read against, not a measurement
     return e.kind;
   }
 
