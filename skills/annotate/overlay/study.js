@@ -19,7 +19,6 @@
   var toTailwind = core.toTailwind;
   var isRootSelector = core.isRootSelector;
   var SANS = palette.SANS;
-  var MONO = palette.MONO;
   var Z = 2147483647;
 
   // Chosen because these are what separate expensive-looking UI from ordinary
@@ -253,7 +252,7 @@
       // outranks the readout by construction and not by DOM order.
       position: "fixed", zIndex: Z - 2, display: "none", maxWidth: "320px", maxHeight: "72vh",
       overflow: "auto", pointerEvents: "none", background: pal.elevated, border: "1px solid " + pal.border,
-      borderRadius: "8px", padding: "10px 12px", font: "11px/1.6 " + MONO, color: pal.text,
+      borderRadius: "8px", padding: "10px 12px", font: "11px/1.6 " + SANS, color: pal.text,
       boxShadow: "0 8px 30px rgba(0,0,0,.4)"
     });
     document.body.appendChild(panel);

@@ -330,7 +330,7 @@
   // alone must never disqualify a resource — only when it also shares the boot
   // origin. No boot base -> always false: an unknown boot origin must never
   // start excluding real site resources.
-  var OWN_MODULE_FILES = ["core.js", "palette.js", "ui.js", "point.js", "measure.js", "study-motion.js", "study.js", "index.js"];
+  var OWN_MODULE_FILES = ["core.js", "palette.js", "fontpicker.js", "fontspanel.js", "ui.js", "point.js", "measure.js", "study-motion.js", "study.js", "fonts.js", "index.js"];
   function isOwnModuleUrl(url, bootBase) {
     if (!bootBase || !url) return false;
     var u = String(url), base = String(bootBase);
@@ -532,6 +532,32 @@
     return out;
   }
 
+  // Pure: the first real family name out of a computed `font-family` value.
+  // Fonts mode groups elements by "which font is this in", and this is the group
+  // key — so a wrong answer silently merges two slots or splits one in half,
+  // with nothing on screen to say so.
+  //
+  // The regex, rather than split(",")[0], is for one case: a family name may
+  // legally CONTAIN a comma as long as it is quoted ("Foo, Bar"). Rare, but a
+  // half-name group key matches no elements at all, so the swap just appears
+  // dead. The three alternatives are, in order: a double-quoted string with
+  // escapes, a single-quoted one, anything up to the first comma.
+  //
+  // A bare generic ("sans-serif") is deliberately returned as-is and NOT
+  // rejected: everything that inherited the page default really is one font,
+  // and on a lightly-styled page that is the group you most want to click.
+  var FIRST_FAMILY_RE = /^\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^,]*)/;
+  function firstFamily(value) {
+    if (!value) return "";
+    var m = FIRST_FAMILY_RE.exec(String(value));
+    var raw = (m ? m[1] : "").trim();
+    var quote = raw.charAt(0);
+    if ((quote === '"' || quote === "'") && raw.charAt(raw.length - 1) === quote && raw.length > 1) {
+      raw = raw.slice(1, -1).replace(/\\(.)/g, "$1");
+    }
+    return raw.trim();
+  }
+
   return {
     buildSelector: buildSelector, fitDimensions: fitDimensions,
     classifyRequest: classifyRequest, createPerfBuffer: createPerfBuffer,
@@ -539,7 +565,7 @@
     defaultsFor: defaultsFor, toTailwind: toTailwind, isRootSelector: isRootSelector,
     isOwnModuleUrl: isOwnModuleUrl, isMotionFingerprintUrl: isMotionFingerprintUrl,
     nearestInScale: nearestInScale, classifyValue: classifyValue, reconcile: reconcile,
-    isAbsentValue: isAbsentValue, nextMode: nextMode,
+    isAbsentValue: isAbsentValue, nextMode: nextMode, firstFamily: firstFamily,
     normalisePath: normalisePath, entryKey: entryKey, entryMetric: entryMetric,
     summariseRun: summariseRun, compareRuns: compareRuns,
   };

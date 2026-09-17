@@ -1,6 +1,6 @@
 ---
 name: annotate
-description: Point-and-comment on the live local app, plus a read-only Study mode that reverse-engineers any site's design system. Invoked as /annotate [url]. Opens the Playwright browser, injects an inspect-element-style overlay so Matt can hover, click, and leave comments (each auto-screenshotted), then watches for those comments and fixes them. Study mode (the 4th toolbar tab) works against any URL, not just the local app, and never modifies the page it inspects. Studied elements can be favourited to a design-studies/ library and promoted, through a reconcile step, into the user's own design language. Dev tool only — never shipped, exempt from mobile-parity.
+description: Point-and-comment on the live local app, plus a read-only Study mode that reverse-engineers any site's design system. Invoked as /annotate [url]. Opens the Playwright browser, injects an inspect-element-style overlay so Matt can hover, click, and leave comments (each auto-screenshotted), then watches for those comments and fixes them. Study mode (the 4th toolbar tab) works against any URL, not just the local app, and never modifies the page it inspects. Studied elements can be favourited to a design-studies/ library and promoted, through a reconcile step, into the user's own design language. Fonts mode (the 5th tab) swaps fonts live on the page so font pairings can be previewed on the real product. Dev tool only — never shipped, exempt from mobile-parity.
 ---
 
 # /annotate — point-and-comment on the live app
@@ -21,12 +21,18 @@ your context and nothing is fetched over the network.
 3. **Boot the overlay** — one call, no server, no pasted source:
    ```
    browser_run_code_unsafe({ code: `async (page) => {
-     const FILES = ["core.js","palette.js","ui.js","point.js","measure.js","study-motion.js","study.js","index.js"];
+     const FILES = ["core.js","palette.js","fontpicker.js","fontspanel.js","ui.js","point.js","measure.js","study-motion.js","study.js","fonts.js","index.js"];
      for (const f of FILES) await page.context().addInitScript({ path: "<this skill's directory>/overlay/" + f });
+     try { await page.context().grantPermissions(["local-fonts"]); } catch (e) {}
      await page.reload({ waitUntil: "domcontentloaded" });
      return await page.evaluate(() => { window.__annotatorMods.index.setup(); return "ready"; });
    }` })
    ```
+   **`grantPermissions(["local-fonts"])` is what makes Fonts mode see the machine's real font
+   library** — 449 families here rather than the 43 a measurement probe can find. It is wrapped
+   in a try/catch because it is not worth failing the boot over: without it Fonts falls back to
+   a curated list and says so in the picker. Everything else works either way.
+
    `addInitScript` takes a **path**, so Playwright reads the files in its own process and
    injects them over CDP before the document's own scripts — the same mechanism as
    `browser_evaluate`, which Chromium does not subject to page CSP. Verified booting on
@@ -46,16 +52,20 @@ your context and nothing is fetched over the network.
    exchange `addInitScript` persists for the browser context, so every later navigation
    re-injects the modules on its own.
 
+   **The fallback boot path below does not grant `local-fonts`** — it has no access to the
+   Playwright context — so Fonts mode will open on the curated list. That is recoverable: the
+   picker's **Use my installed fonts** button asks for the permission directly.
+
    **If that tool is unavailable or refused**, the fallback is to read the eight files and
    `browser_evaluate` each one's contents in order, then call `index.setup()`. It works
    everywhere the first one does, but it costs ~24k tokens of your context per boot, which is
    exactly what the retired server existed to avoid. Say you are doing it and why.
 4. *(nothing — the boot above is a single step)*
 5. **Tell Matt**, briefly: a toolbar sits **bottom-centre**, and it **starts with no mode
-   selected** (browse freely). Top row never changes — **Point · Measure · Compare · Study**,
+   selected** (browse freely). Top row never changes — **Point · Measure · Compare · Study · Fonts**,
    then **Queue**; the second row shows whatever the selected mode needs and collapses when
    nothing is selected. **Click the mode you want** (no cycling), or press **Alt+A** to
-   rotate `off → Point → Measure → Study → off`. **Clicking the mode you are already in
+   rotate through the modes and back to `off`. **Clicking the mode you are already in
    leaves it**, which is how you get back to using the page.
    - **Point** — hover highlights the element **and shows an inspector card** (computed
      font/size/color/padding/etc.), click opens a comment box, **⌘/Ctrl+Enter** or **Save**
@@ -68,6 +78,8 @@ your context and nothing is fetched over the network.
      again, see what moved. See the Compare section below.
    - **Study** — reverse-engineers styles/design-system/motion, read-only, works on any
      site. Row 2 holds the note/tags/★ Save favourite inputs.
+   - **Fonts** — click text, retype its font, see the pairing on the real page. This is the
+     one mode that **writes to the page** (inline styles only, fully revertible). See below.
 
    **Queue** opens a panel of saved comments on demand and carries the running count;
    clicking a row scrolls that annotation into view. Say **"done"** to stop.
@@ -228,8 +240,9 @@ if you need a real answer for that element.
   mechanism as `browser_evaluate`, which Chromium does not subject to page CSP.
   ```
   browser_run_code_unsafe({ code: `async (page) => {
-    const FILES = ["core.js","palette.js","ui.js","point.js","measure.js","study-motion.js","study.js","index.js"];
+    const FILES = ["core.js","palette.js","fontpicker.js","fontspanel.js","ui.js","point.js","measure.js","study-motion.js","study.js","fonts.js","index.js"];
     for (const f of FILES) await page.context().addInitScript({ path: "<this skill's directory>/overlay/" + f });
+    try { await page.context().grantPermissions(["local-fonts"]); } catch (e) {}
     await page.reload({ waitUntil: "domcontentloaded" });
     return await page.evaluate(() => { window.__annotatorMods.index.setup(); return "ready"; });
   }` })
@@ -433,6 +446,125 @@ Tailwind config that mirrors the doc), **say so before you write**, and change t
 same commit. Promoting a token and leaving its test red hands him a broken suite for a
 change he approved.
 
+## Fonts mode
+
+**Preview a font pairing on the real page, not on a specimen sheet.** Click a heading, click
+a paragraph, retype both, and look at the actual product with the actual copy at the actual
+sizes — which is the only place a pairing can honestly be judged.
+
+**This is the one mode that writes to the page it is pointed at.** Study's read-only promise
+is Study's, not the overlay's. Fonts writes **nine inline properties and nothing else** —
+`font-family`, `font-weight`, `font-size`, `line-height`, `letter-spacing`, `word-spacing`,
+`text-transform`, `font-style`, `font-variant-caps` — on elements it matched, snapshotting each
+element's exact previous inline value and priority first. **Reset** puts every one of them
+back, and a page reload clears them too. It skips our own chrome (`.__ann-ui`) so the toolbar
+cannot restyle itself.
+
+That list is a single array in `fonts.js` (`TOUCHED`), and `overlay.test.cjs` asserts every
+property the mode writes appears in it. A property written but not snapshotted is a change
+that outlives Reset with nothing on screen to say so — the one promise this mode cannot break.
+
+**Driving it:**
+1. Click **Fonts** in the toolbar.
+2. **Click any text on the page.** The cursor is a crosshair while Fonts is picking. The
+   overlay adds a **card** for that element **plus the elements like it in the same div**
+   (same tag, same classes, same font), showing how many it holds. Clicking a nav link picks
+   that nav's links, not every element on the page in that font. **Every element in that card's group stays outlined** so the count is something you can
+   see rather than take on trust; the outline follows the newest pick and clears when you
+   leave the mode. **Alt+click** to pick a link or button without the
+   page navigating away (same convention as Study; plain click stops nothing, Shift skips).
+3. **Press the card's font button** to open the picker. Every row in it is **set in the font
+   it names** — that is the whole reason it is not a native dropdown, which would render all
+   82 options in the browser's UI font. Type to search (a prefix match ranks above a match
+   buried mid-name), filter by **All / On this Mac / Google**, ↑↓ and Enter work, Esc closes.
+   Rows tagged `web` are fetched from Google the moment they scroll into view, one family at
+   a time. The weight dropdown beside the button is `keep` by default, and **↺ puts the
+   page's own font back** without removing the card.
+4. **Press `Type ▾` for the rest of the suite.** Case (Original / UPPER / lower / Title),
+   size, leading, tracking, word spacing, weight, italic, small caps. One card expands at a
+   time. Sliders act **while you drag** — that is the point — and each opens on the value the
+   element you clicked already has, so the first nudge is an adjustment rather than a jump.
+   `↺` beside a slider puts that one property back; **Reset type** puts the whole card's type
+   back while keeping the font you picked.
+5. **Two cards is a pairing.** That is the shape to aim for: one for the headings, one for
+   the body, judged together on the real page.
+6. **Swaps stay applied when you leave the mode**, deliberately — judging a pairing means
+   scrolling and clicking through the app with the new fonts on, which is impossible from
+   inside a mode that owns every click. **Reset** clears them.
+
+**Size, leading and tracking are RELATIVE, and that is what makes them safe on a group.** A
+card can cover several elements, and those elements are not always the same size — this page's
+headings span 52px down to an 11px eyebrow. Writing one absolute size across them would
+flatten the hierarchy you are trying to judge. So leading is written unitless, tracking and
+word spacing in `em` (both already ratios of each element's own size), and **size is a
+multiplier applied per element against the size it had before the card touched it**. Drag the
+size slider twice and it scales from the page's own value both times; it never compounds.
+
+**From the agent side** — synchronous, nothing is sampled:
+```
+() => window.__annotatorFontsTake()
+```
+```
+{ url, fontsAvailable, swaps: [{ from, to, weight, count, source }] }
+```
+Each swap carries `from`, `to`, and every typographic setting that was actually changed —
+`weight`, `sizeScale`, `lineHeight`, `tracking`, `wordSpacing`, `transform`, `italic`,
+`smallCaps` — with `null` meaning "left as the page had it". **`css` is the same settings as a
+ready-made declaration block**, so a decision can be pasted rather than retyped; its
+`font-size` is the anchor element's, while `sizeScale` is the part that generalises across the
+group. **`count` is the load-bearing field**: a swap that matched nothing and a swap that restyled 300 elements are
+indistinguishable without it, and only the second one is a decision. Feed the result into the
+promote step (Typography) exactly like a favourite — a pairing he liked on screen is
+inspiration, not yet a decision.
+
+**Where the fonts come from.** Installed fonts are enumerated with **`queryLocalFonts()`**,
+which needs the `local-fonts` permission. The boot snippet grants it outright, so normally
+there is no prompt. That is the difference between seeing your whole library and seeing a
+guess: 449 families against 43 on this machine, measured 2026-08-20. The fallback is
+**canvas width-measurement** over a fixed candidate list.
+
+**If the list comes up short, the picker says why and offers the fix.** The permission used to
+be obtainable only out of band — from `grantPermissions` in the boot snippet — so a session
+that booted before that line existed, or through the fallback boot path below (which has no
+grant), showed the curated set for ever with no way back. It can now be asked for from inside
+the page, from Matt's own click, because the prompt appears in a browser window he is looking
+at. Four causes produce the same short list, and the note distinguishes them:
+
+| `fontAccess` | what the picker says | fixable in-page |
+|---|---|---|
+| `prompt` / `unknown` | "Your own fonts need the browser's permission" + **Use my installed fonts** | yes — click it |
+| `denied` | blocked for this site; allow it in site settings, then **Retry** | after changing site settings |
+| `insecure` | the page is plain `http`, so the browser hides the API entirely | no — needs `https` or `localhost` |
+| `unsupported` | this browser cannot list installed fonts | no |
+
+`__annotatorFontsTake()` reports both `fontsFrom: "system" | "probed"` and `fontAccess`, so a
+session that cannot see the picker can still say what is wrong. **The button's click path must
+stay synchronous down to `queryLocalFonts()`** — Chrome only shows the prompt while the user
+activation from that click is live, and one `await` on the way in spends it. `overlay.test.cjs`
+asserts there is no `await` in that path; the failure mode is invisible, because the prompt
+simply never appears.
+
+The web list is ~40 curated pairing families, hard-coded: the Google Fonts *catalogue* API
+needs a key, and a key in a dev tool is a key in a git repo. A web family you already own is
+offered as `local`, so it needs no network at all.
+
+**Honest limits — report these, don't paper over them:**
+- **A site that blocks Google Fonts blocks the web half.** On `github.com` (`default-src
+  'none'`) the stylesheet is refused; the row says so in its own line rather than silently
+  doing nothing, and **installed fonts still work there**. A blocked stylesheet does not throw
+  — `document.fonts.load()` resolves with an empty face list, which is what that check reads.
+- **A re-render undoes the swap for the elements it replaced.** Inline styles live on the
+  nodes; React handing back fresh nodes hands back the original font. Re-pick the row to
+  re-apply. A `MutationObserver` would fix it and is not worth it for a preview tool.
+- **Grouping is by computed font, so a page set in one font everywhere gives one card.** That
+  is the honest answer — there is no second font to pair against yet.
+- **Only on the fallback path is the list incomplete.** With `local-fonts` granted the picker
+  shows every installed family. Without it, it shows what the probe list happens to name — and
+  it says so at the foot of the picker, so "my font is missing" always has an answer.
+- **"Like it" means an exact tag and class match.** A nav link with an extra `active` class
+  won't join its siblings; click it separately to get its own card.
+- **Shadow DOM isn't walked**, same as Study.
+
 ## Compare mode
 
 **Prove the fix worked.** Record a journey in Measure, save it as a baseline, let the agent
@@ -582,11 +714,21 @@ Repeat until Matt says done (or the browser closes / evaluate errors):
   would silently stop persisting every annotation. An in-memory map backs it up when the
   quota refuses. Ceiling: an image only survives a page reload if it fit in localStorage;
   the text comment always survives, so a lost attachment degrades, never blocks.
-- The overlay UI derives its own palette at runtime from the **host page's computed**
-  background and text colors (`getComputedStyle` + `color-mix`, see `overlay/palette.js`),
-  plus one fixed accent color — it does not read any app's design tokens or CSS variables.
-  That's what lets it look native on any site it's dropped into, light or dark, standalone
-  from whatever design system (if any) the host page uses.
+- **The overlay chrome is a fixed dark theme in one typeface** (`overlay/palette.js`). It used
+  to derive its colours at runtime from the host page's computed background and text, so it
+  looked native wherever it landed; Matt's call 2026-08-20 was to hardcode it, because a
+  chrome that changes colour depending on the site is a chrome you re-read every time. A dark
+  panel with a real border and shadow reads as *the tool, not the page* on a white site and a
+  black one alike. It still reads no app's design tokens or CSS variables.
+  - **Geist for everything, and there is no monospace face.** Geist is **not installed** on
+    this machine, so `ui.js` loads it from Google once per page; the stack falls back to
+    `system-ui` until it arrives, or permanently on a site whose CSP refuses the request —
+    this is chrome, not content, so a missing typeface costs looks and nothing else. The
+    column alignment the old monospace bought now comes from `font-variant-numeric:
+    tabular-nums`, set once over the whole chrome.
+  - The muted tones are chosen **by measured contrast, not by eye** — `text3` carries the
+    10–11px control labels, and its first hand-picked value came in at 3.08:1 against a card.
+    `overlay.test.cjs` computes every ink-on-surface pair and fails below 4.5:1.
 - **Never add an `<input type="file">` to the overlay.** This browser is Playwright-driven:
   Chrome hands the file chooser to the automation client instead of opening the OS dialog,
   so Matt sees nothing, and every queued chooser makes your next tool call fail with

@@ -3,13 +3,16 @@
 // annotation state — index.js decides when to call what.
 ;(function (root, factory) {
   var palette = (typeof module !== "undefined" && module.exports) ? require("./palette.js") : (root.__annotatorMods && root.__annotatorMods.palette);
-  var api = factory(palette);
+  var fontpicker = (typeof module !== "undefined" && module.exports) ? require("./fontpicker.js") : (root.__annotatorMods && root.__annotatorMods.fontpicker);
+  var fontspanel = (typeof module !== "undefined" && module.exports) ? require("./fontspanel.js") : (root.__annotatorMods && root.__annotatorMods.fontspanel);
+  var api = factory(palette, fontpicker, fontspanel);
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else { root.__annotatorMods = root.__annotatorMods || {}; root.__annotatorMods.ui = api; }
-})(typeof self !== "undefined" ? self : this, function (palette) {
+})(typeof self !== "undefined" ? self : this, function (palette, fontpicker, fontspanel) {
   if (!palette) throw new Error("annotate: ui.js requires palette.js to load first");
+  if (!fontpicker) throw new Error("annotate: ui.js requires fontpicker.js to load first");
+  if (!fontspanel) throw new Error("annotate: ui.js requires fontspanel.js to load first");
   var SANS = palette.SANS;
-  var MONO = palette.MONO;
 
   function create(pal) {
     // ---- UI ----
@@ -17,19 +20,101 @@
     var Z = 2147483647;
 
     // Crosshair cursor over the whole app while ON (our own UI keeps its normal cursors).
+    // Geist, loaded once for the whole overlay. It is not installed on this
+    // machine, so without this the chrome silently falls back to system-ui and
+    // "hardcode the UI font" quietly does nothing. A site whose CSP refuses the
+    // request keeps the fallback stack and stays perfectly usable — this is
+    // chrome, not content, so a missing typeface costs looks and nothing else.
+    var fontLink = document.createElement("link"); fontLink.className = "__ann-ui";
+    fontLink.rel = "stylesheet";
+    fontLink.href = palette.FONT_CSS_URL;
+    document.head.appendChild(fontLink);
+
     var cursorStyle = document.createElement("style"); cursorStyle.className = "__ann-ui";
-    cursorStyle.textContent = "html.__ann-cross, html.__ann-cross :not(.__ann-ui):not(.__ann-ui *){cursor:crosshair !important}";
+    cursorStyle.textContent = "html.__ann-cross, html.__ann-cross :not(.__ann-ui):not(.__ann-ui *){cursor:crosshair !important}"
+      // The picked group, outlined where it stands. A single absolutely-placed
+      // box can only ever show ONE element and drifts the moment the page
+      // scrolls; an attribute plus a rule marks every element in the group,
+      // follows them through scroll and reflow for free, and comes off by
+      // removing the attribute.
+      + "[data-ann-font-pick]{outline:1.5px solid " + pal.accent + " !important;outline-offset:2px}"
+      // What a Fonts click WOULD grab, shown while hovering: fainter and dashed,
+      // so it never reads as already picked.
+      + "[data-ann-font-peek]:not([data-ann-font-pick]){outline:1px dashed rgba(255,111,94,0.7) !important;outline-offset:2px}"
+      // The hover box's ring: a gradient drifting round the border, hollowed out
+      // by a mask so the element underneath keeps its real colours.
+      + "@keyframes __ann-drift{to{background-position:300% 0}}"
+      + ".__ann-ring{position:absolute;inset:0;padding:1.5px;border-radius:3px;"
+      + "background:linear-gradient(90deg," + pal.accent + ",#ffb35e,#ff5e9e," + pal.accent + ");background-size:300% 100%;"
+      + "animation:__ann-drift 3s linear infinite;"
+      + "-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude}"
+      + "@media (prefers-reduced-motion:reduce){.__ann-ring{animation:none}.__ann-hl{transition:none !important}}"
+      // Keyboard focus, for the whole overlay rather than for one panel. Every
+      // control here is built with inline styles, which cannot express
+      // :focus-visible at all — so until now nothing in this tool showed where
+      // the keyboard was. Scoped under .__ann-ui so the host page's own focus
+      // styling is never touched.
+      + ".__ann-ui button:focus-visible,.__ann-ui input:focus-visible,.__ann-ui select:focus-visible,.__ann-ui textarea:focus-visible"
+      + "{outline:2px solid " + pal.accent + ";outline-offset:1px;border-radius:6px}"
+      // The type sliders. A default range control paints a thick dark track that
+      // reads as four heavy bars across a light panel — the loudest thing in a
+      // panel whose job is to let you look at the PAGE. A hairline track and a
+      // small accent thumb say the same thing quietly. Pseudo-elements are the
+      // only way to reach either, so this cannot live in the inline styles the
+      // rest of the chrome is built from.
+      // Tabular figures for the entire overlay. This is what pays for dropping
+      // the monospace face: every measured value in this tool sits in a column —
+      // element counts, millisecond deltas, tracking readouts — and proportional
+      // digits make those columns jitter as the numbers change under a drag.
+      + ".__ann-ui,.__ann-ui *{font-variant-numeric:tabular-nums}"
+      + ".__ann-ui input[type=range]{-webkit-appearance:none;appearance:none;background:transparent;height:14px;margin:0}"
+      + ".__ann-ui input[type=range]::-webkit-slider-runnable-track{height:3px;border-radius:2px;background:" + pal.hover + "}"
+      + ".__ann-ui input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:12px;height:12px;"
+      + "margin-top:-4.5px;border-radius:50%;background:" + pal.accent + ";border:0;cursor:pointer}"
+      + ".__ann-ui input[type=range]::-moz-range-track{height:3px;border-radius:2px;background:" + pal.hover + "}"
+      + ".__ann-ui input[type=range]::-moz-range-thumb{width:12px;height:12px;border-radius:50%;background:" + pal.accent + ";border:0;cursor:pointer}";
     document.head.appendChild(cursorStyle);
 
-    var hl = document.createElement("div"); hl.className = "__ann-ui";
-    Object.assign(hl.style, { position: "fixed", zIndex: Z - 1, pointerEvents: "none", border: "1.5px solid " + pal.accent, background: pal.accentSoft, display: "none", borderRadius: "5px" });
+    // The hover box sits a few px outside the element, glides between targets,
+    // and carries a small name tag. No fill: tinting the page is what made the
+    // old box look flat, and it changed the colours being judged.
+    var HL_PAD = 3, HL_GLIDE = "transform 120ms ease-out, width 120ms ease-out, height 120ms ease-out";
+    var hl = document.createElement("div"); hl.className = "__ann-ui __ann-hl";
+    Object.assign(hl.style, { position: "fixed", left: "0", top: "0", zIndex: Z - 1, pointerEvents: "none", display: "none",
+      borderRadius: "3px", boxShadow: "0 0 12px rgba(255,111,94,0.28)",
+      transition: HL_GLIDE });
+    var ring = document.createElement("div"); ring.className = "__ann-ui __ann-ring";
+    var tag = document.createElement("div"); tag.className = "__ann-ui";
+    Object.assign(tag.style, { position: "absolute", left: "-1.5px", padding: "2px 6px", borderRadius: "3px", whiteSpace: "nowrap",
+      background: pal.accent, color: pal.accentFg, font: "500 10.5px/1.3 " + SANS });
+    hl.appendChild(ring); hl.appendChild(tag);
     document.body.appendChild(hl);
-    function showHighlight(el) { var r = el.getBoundingClientRect(); Object.assign(hl.style, { display: "block", left: r.left + "px", top: r.top + "px", width: r.width + "px", height: r.height + "px" }); }
+    // One owner for the crosshair. It used to be two lines inside point.js, so
+    // every later mode that wanted it either duplicated them or, as Fonts did,
+    // silently shipped without a picking cursor at all.
+    function setCrosshair(on) {
+      document.documentElement.classList[on ? "add" : "remove"]("__ann-cross");
+    }
+    function showHighlight(el) {
+      var r = el.getBoundingClientRect(), cs = getComputedStyle(el);
+      // Appearing from hidden must not glide in from wherever the box was last.
+      var wasHidden = hl.style.display === "none";
+      if (wasHidden) hl.style.transition = "none";
+      Object.assign(hl.style, { display: "block",
+        transform: "translate(" + (r.left - HL_PAD) + "px," + (r.top - HL_PAD) + "px)",
+        width: (r.width + HL_PAD * 2) + "px", height: (r.height + HL_PAD * 2) + "px" });
+      var family = String(cs.fontFamily || "").split(",")[0].replace(/["']/g, "").trim();
+      tag.textContent = el.tagName.toLowerCase() + (family ? " · " + family + " " + Math.round(parseFloat(cs.fontSize) || 0) + "px" : "");
+      // Above the box, unless that would put it off the top of the screen.
+      if (r.top < 24) { tag.style.top = "calc(100% + 3px)"; tag.style.bottom = ""; }
+      else { tag.style.bottom = "calc(100% + 3px)"; tag.style.top = ""; }
+      if (wasHidden) { void hl.offsetWidth; hl.style.transition = HL_GLIDE; }
+    }
     function hideHighlight() { hl.style.display = "none"; }
 
     // Inspector card — DevTools-style computed-style readout that follows the cursor.
     var insp = document.createElement("div"); insp.className = "__ann-ui";
-    Object.assign(insp.style, { position: "fixed", zIndex: Z, display: "none", maxWidth: "300px", pointerEvents: "none", background: pal.elevated, border: "1px solid " + pal.border, borderRadius: "8px", padding: "8px 10px", font: "11px/1.55 " + MONO, color: pal.text, boxShadow: "0 8px 30px rgba(0,0,0,.4)" });
+    Object.assign(insp.style, { position: "fixed", zIndex: Z, display: "none", maxWidth: "300px", pointerEvents: "none", background: pal.elevated, border: "1px solid " + pal.border, borderRadius: "8px", padding: "8px 10px", font: "11px/1.55 " + SANS, color: pal.text, boxShadow: "0 8px 30px rgba(0,0,0,.4)" });
     document.body.appendChild(insp);
     function inspRow(label, value, swatch) {
       var d = document.createElement("div"); Object.assign(d.style, { display: "flex", alignItems: "center", gap: "6px", whiteSpace: "nowrap", overflow: "hidden" });
@@ -72,7 +157,7 @@
     function kbdRow(keys, desc) {
       var d = document.createElement("div"); Object.assign(d.style, { display: "flex", alignItems: "center", gap: "8px", padding: "3px 0" });
       var kw = document.createElement("div"); Object.assign(kw.style, { display: "flex", gap: "3px", flex: "none", minWidth: "92px" });
-      keys.forEach(function (k) { var kb = document.createElement("span"); kb.textContent = k; Object.assign(kb.style, { background: pal.surface2, border: "1px solid " + pal.border, borderRadius: "4px", padding: "1px 5px", font: "600 10px/1.6 " + MONO, color: pal.text2 }); kw.appendChild(kb); });
+      keys.forEach(function (k) { var kb = document.createElement("span"); kb.textContent = k; Object.assign(kb.style, { background: pal.surface2, border: "1px solid " + pal.border, borderRadius: "4px", padding: "1px 5px", font: "600 10px/1.6 " + SANS, color: pal.text2 }); kw.appendChild(kb); });
       var t = document.createElement("span"); t.textContent = desc; t.style.color = pal.text2;
       d.append(kw, t); return d;
     }
@@ -132,7 +217,7 @@
         Object.assign(row.style, { display: "flex", gap: "8px", alignItems: "baseline", padding: "4px 6px", borderRadius: "6px", cursor: onPick ? "pointer" : "default" });
         var badge = document.createElement("span");
         badge.textContent = it.n;
-        Object.assign(badge.style, { flex: "none", minWidth: "18px", textAlign: "center", background: it.status === "new" ? pal.accent : pal.surface2, color: it.status === "new" ? pal.accentFg : pal.text3, borderRadius: "5px", font: "600 10px/1.7 " + MONO });
+        Object.assign(badge.style, { flex: "none", minWidth: "18px", textAlign: "center", background: it.status === "new" ? pal.accent : pal.surface2, color: it.status === "new" ? pal.accentFg : pal.text3, borderRadius: "5px", font: "600 10px/1.7 " + SANS });
         var txt = document.createElement("span");
         txt.textContent = it.text;
         Object.assign(txt.style, { color: pal.text2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
@@ -177,6 +262,21 @@
       }
       var act = actions[hit.getAttribute("data-ann-act")];
       if (act) act(hit);
+    }, true);
+
+    // Same delegated-capture reasoning as the click listener above, for the
+    // controls a click never fires on: a <select> reports through `change`, so
+    // the fonts weight control, wired only into `actions`, would look dead on
+    // exactly the sites that eat propagation.
+    var changeActions = {};
+    function onChange(name, fn) { changeActions[name] = fn; }
+    document.addEventListener("change", function (e) {
+      var t = e.target;
+      if (!t || !t.closest) return;
+      var hit = t.closest("[data-ann-change]");
+      if (!hit || !isOurs(hit)) return;
+      var fn = changeActions[hit.getAttribute("data-ann-change")];
+      if (fn) fn(hit);
     }, true);
 
     onAct("help", function () { guide.style.display = guide.style.display === "none" ? "block" : "none"; });
@@ -339,7 +439,7 @@
         Object.assign(row.style, { display: "flex", gap: "10px", alignItems: "baseline", padding: "3px 6px", borderRadius: "5px", background: pal.surface2 });
         var d = document.createElement("span");
         d.textContent = r.detail;
-        Object.assign(d.style, { flex: "none", minWidth: "112px", color: TONE[r.tone] || pal.text2, font: "600 11px " + MONO });
+        Object.assign(d.style, { flex: "none", minWidth: "112px", color: TONE[r.tone] || pal.text2, font: "600 11px " + SANS });
         var l = document.createElement("span");
         l.textContent = r.label;
         Object.assign(l.style, { color: pal.text2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
@@ -348,6 +448,14 @@
       });
       cmpRows.style.display = "flex";
     }
+
+    // ---- fonts panel ----
+    // Built by its own module. It grew a full typographic control surface —
+    // case, size, leading, tracking, word spacing, weight, italic, small caps —
+    // and that is more UI than the highlight, inspector, toolbar and queue put
+    // together. `bar` is handed over so the picker knows what it must not cover.
+    var picker = fontpicker.create(pal);
+    var fonts = fontspanel.create(pal, picker, { reserve: bar });
 
     // A plain line of text for a mode whose row 2 is just a status ("Passes
     // through (recording) · 41 entries"). Saves index.js hand-building a node.
@@ -361,6 +469,7 @@
     return {
       showHighlight: showHighlight,
       hideHighlight: hideHighlight,
+      setCrosshair: setCrosshair,
       showInspector: showInspector,
       hideInspector: hideInspector,
       bar: bar,
@@ -374,6 +483,19 @@
       favPanel: favPanel,
       setFavouriteStatus: setFavouriteStatus,
       clearFavouriteInputs: function () { favNote.value = ""; favTags.value = ""; },
+      fontsPanel: fonts.el,
+      setFontOptions: fonts.setOptions,
+      setFontSlots: fonts.setSlots,
+      setFontsStatus: fonts.setStatus,
+      refreshFontPicker: picker.refresh,
+      closeFontPicker: picker.close,
+      onFontSlotChange: fonts.onPickFont,
+      onFontSlotRemove: fonts.onRemove,
+      onFontStyle: fonts.onStyle,
+      onFontClearStyles: fonts.onClearStyles,
+      onFontsReset: fonts.onReset,
+      onGrantFonts: fonts.onGrantFonts,
+      onChange: onChange,
       comparePanel: comparePanel,
       setCompareStatus: setCompareStatus,
       setCompareRows: setCompareRows,

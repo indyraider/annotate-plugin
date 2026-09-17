@@ -5,7 +5,7 @@
 // module loaded — Task 6's loader replaces the old bootstrap-into-localStorage
 // mechanism entirely, so that block from overlay.js is deliberately NOT here.
 ;(function (root, factory) {
-  var core, palette, ui, point, measure, study;
+  var core, palette, ui, point, measure, study, fonts;
   if (typeof module !== "undefined" && module.exports) {
     core = require("./core.js");
     palette = require("./palette.js");
@@ -13,20 +13,22 @@
     point = require("./point.js");
     measure = require("./measure.js");
     study = require("./study.js");
+    fonts = require("./fonts.js");
   } else {
     var mods = root.__annotatorMods || {};
-    core = mods.core; palette = mods.palette; ui = mods.ui; point = mods.point; measure = mods.measure; study = mods.study;
+    core = mods.core; palette = mods.palette; ui = mods.ui; point = mods.point; measure = mods.measure; study = mods.study; fonts = mods.fonts;
   }
-  var api = factory(core, palette, ui, point, measure, study);
+  var api = factory(core, palette, ui, point, measure, study, fonts);
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else { root.__annotatorMods = root.__annotatorMods || {}; root.__annotatorMods.index = api; }
-})(typeof self !== "undefined" ? self : this, function (core, palette, ui, point, measure, study) {
+})(typeof self !== "undefined" ? self : this, function (core, palette, ui, point, measure, study, fonts) {
   if (!core) throw new Error("annotate: index.js requires core.js to load first");
   if (!palette) throw new Error("annotate: index.js requires palette.js to load first");
   if (!ui) throw new Error("annotate: index.js requires ui.js to load first");
   if (!point) throw new Error("annotate: index.js requires point.js to load first");
   if (!measure) throw new Error("annotate: index.js requires measure.js to load first");
   if (!study) throw new Error("annotate: index.js requires study.js to load first");
+  if (!fonts) throw new Error("annotate: index.js requires fonts.js to load first");
 
   function __setupAnnotator() {
     if (window.__annotator) return;                 // idempotent re-inject guard
@@ -54,6 +56,7 @@
     var pointMode = point.create(ctx);
     var measureMode = measure.create(ctx);
     var studyMode = study.create(ctx);
+    var fontsMode = fonts.create(ctx);
 
     // The toolbar's fixed top row. The internal key for Point is "on" — every
     // mode guard in point.js reads `mode !== "on"` and inverting that makes the
@@ -64,12 +67,24 @@
       { key: "on", label: "Point", title: "Comment on your own app" },
       { key: "measure", label: "Measure", title: "Record real performance while you drive" },
       { key: "compare", label: "Compare", title: "Baseline vs re-run — prove the fix worked" },
-      { key: "study", label: "Study", title: "Take apart any site's design" }
+      { key: "study", label: "Study", title: "Take apart any site's design" },
+      { key: "fonts", label: "Fonts", title: "Swap fonts live to preview a pairing" }
     ];
     // Alt+A's cycle. Derived from MODES rather than written out, so a mode that
     // ships disabled can never become a dead stop in the rotation. The rotation
     // itself is core.nextMode — pure, and tested in Node rather than grepped for.
     var CYCLE_KEYS = MODES.filter(function (m) { return !m.disabled; }).map(function (m) { return m.key; });
+
+    // Whether the one-shot system-font enumeration has already been asked for.
+    // MUST be checked here rather than relying on loadSystemFonts' own guard:
+    // that guard returns by calling onDone SYNCHRONOUSLY, and onDone below
+    // repaints, and the repaint calls loadSystemFonts again — which after the
+    // first call always takes the guarded path, so it recurses until the stack
+    // dies. Measured 20 Aug: entering Fonts mode threw "Maximum call stack size
+    // exceeded" every time, through fonts.js -> updateToolbar -> fonts.js.
+    // The callback is only worth a repaint when the list actually ARRIVES, and
+    // that happens exactly once.
+    var systemFontsRequested = false;
 
     function updateToolbar() {
       var m = state.mode, c = window.__annotations.length;
@@ -94,6 +109,27 @@
         uiHandles.setClickHint("Passes through");
         uiHandles.setModeTools(uiHandles.comparePanel);
         uiHandles.setCompareStatus(compareStatusLine());
+      } else if (m === "fonts") {
+        uiHandles.setClickHint("Add this font as a slot");
+        // available() probes ~90 families by canvas measurement, so it is called
+        // here (first paint of the mode) rather than at setup — it memoises, and
+        // a tool you never open should cost nothing.
+        uiHandles.setFontOptions(fontsMode.available(), function (name) {
+          // A row scrolled into view and cannot draw itself yet. Load it, then
+          // repaint the open picker — without the repaint the font arrives and
+          // nothing on screen changes, so every web font looks unavailable.
+          fontsMode.preloadPreview(name, function () { uiHandles.refreshFontPicker(); });
+        }, fontsMode.catalogueNote());
+        uiHandles.setModeTools(uiHandles.fontsPanel);
+        uiHandles.setFontSlots(fontsMode.rows());
+        // One sentence, and only the one that is true right now. The first
+        // version stacked three facts into a line that wrapped, which is how a
+        // panel starts reading as a form instead of a tool.
+        var live = fontsMode.take().swaps.length;
+        uiHandles.setFontsStatus(
+          !fontsMode.slotCount() ? "Click any text on the page. Everything in that font becomes a card." :
+          live ? live + (live === 1 ? " swap is" : " swaps are") + " on, and stay on when you leave Fonts."
+               : "Alt+click to pick a link or button without following it.");
       } else if (m === "on") {
         uiHandles.setClickHint("Leave a comment");
         uiHandles.setModeTools(uiHandles.toolsText("Click an element to comment · hold Shift to click through"));
@@ -111,7 +147,46 @@
       if (next === "on") pointMode.enable(); else pointMode.disable();
       if (next === "measure") measureMode.start(); else measureMode.stop();
       if (next === "study") studyMode.enable(); else studyMode.disable();
+      if (next === "fonts") fontsMode.enable(); else { fontsMode.disable(); uiHandles.closeFontPicker(); }
       updateToolbar();
+      // ---- one-shot work, on ENTERING the mode, never from updateToolbar ----
+      //
+      // These two used to live in updateToolbar's fonts branch, and that was
+      // always wrong — a bootstrap does not belong in a repaint. It was merely
+      // invisible while loadSystemFonts returned silently on its second call.
+      // The moment that early return started calling its callback (so a caller
+      // awaiting it could not hang), the pair became: updateToolbar ->
+      // loadSystemFonts -> onDone -> updateToolbar -> ... and the overlay died
+      // on "Maximum call stack size exceeded" the instant Fonts was opened.
+      //
+      // Called from here, the callback repaints and the repaint calls nothing
+      // back. That is the property that makes the loop impossible, rather than
+      // merely unlikely.
+      if (next === "fonts") {
+        if (!systemFontsRequested) {
+          systemFontsRequested = true;
+          fontsMode.loadSystemFonts(function () { updateToolbar(); });
+        }
+        fontsMode.refreshPermission(function () {
+          updateToolbar();
+          uiHandles.refreshFontPicker();
+          // Enumeration is one-shot, and it is FLAKY: the same page gave the
+          // curated 82 on one run and the real 488 on the next, with the
+          // permission granted both times. One-shot plus flaky means a single
+          // lost race leaves the short list in place for the rest of the page's
+          // life, on a machine that was perfectly willing to answer — and it
+          // looks exactly like a genuine refusal.
+          //
+          // So: retried, but only on ENTERING the mode, only when the browser
+          // says the permission really is granted, and only while the list is
+          // still the short one. Every one of those conditions goes false the
+          // moment it works, so it cannot spin — and none of them is true for a
+          // machine that will never answer, so that case is not re-asked either.
+          if (fontsMode.accessState() === "granted" && fontsMode.take().fontsFrom !== "system") {
+            fontsMode.requestSystemFonts(function () { updateToolbar(); uiHandles.refreshFontPicker(); });
+          }
+        });
+      }
     }
     // Clicking the mode you are already in leaves it. Without this, "off" is
     // only reachable by cycling all the way round with Alt+A, and off is the
@@ -200,6 +275,27 @@
       uiHandles.setFavouriteStatus("★ Saved" + (tags.length ? " · " + tags.join(", ") : "") + " — pull it with __annotatorStudyFavourite()", true);
     });
 
+    // ---- Fonts: the swap rows ----
+    // ui.js hands back three primitives (which row, which family, which weight)
+    // and knows nothing else; every decision about what that MEANS is here.
+    uiHandles.onFontSlotChange(function (id, family, weight) { fontsMode.setFont(id, family, weight); });
+    uiHandles.onFontSlotRemove(function (id) { fontsMode.removeSlot(id); });
+    uiHandles.onFontsReset(function () { fontsMode.reset(); });
+    // `live` is true while a slider is still under the cursor. It travels all
+    // the way down to fonts.js, which uses it to restyle the group it already
+    // knows instead of re-sweeping the document on every frame of a drag — and
+    // to stay quiet, so the panel is not rebuilt out from under the slider.
+    uiHandles.onFontStyle(function (id, key, value, live) { fontsMode.setStyle(id, key, value, live); });
+    uiHandles.onFontClearStyles(function (id) { fontsMode.clearStyles(id); });
+    // Asking the browser for the machine's font library, from Matt's own click.
+    // The permission used to be obtainable ONLY out of band, from a
+    // grantPermissions call in the boot snippet — so a session that booted
+    // without it, or through SKILL.md's fallback path, had no way back and just
+    // showed the curated set for ever.
+    uiHandles.onGrantFonts(function () {
+      fontsMode.requestSystemFonts(function () { updateToolbar(); uiHandles.refreshFontPicker(); });
+    });
+
     // Alt+A must be attached UNCONDITIONALLY, not inside point mode's enable()/
     // disable() bracket — mode is "off" (point mode disabled) at the exact
     // moment this needs to fire to turn it back on.
@@ -254,6 +350,12 @@
       updateToolbar();
       return { ok: true, entries: entries.length };
     };
+    // Fonts' agent-facing entry point. Synchronous — the choices are already
+    // made by the time this is called; nothing is sampled or fetched. Returns
+    // every swap with the element COUNT it touched, because a swap that matched
+    // nothing and a swap that restyled the page look identical from the outside.
+    window.__annotatorFontsTake = function () { return fontsMode.take(); };
+
     window.__annotatorCompareClearBaseline = function () {
       try { localStorage.removeItem(BASELINE_KEY); } catch (e) {}
       updateToolbar();
