@@ -128,6 +128,28 @@ check("a comment carries the page's recent console errors and failed requests", 
   assert.ok(!a.context.failedRequests.some((r) => /__nextjs_original-stack-frames/.test(r.url)), "the overlay's own source lookup is not reported as page traffic");
 });
 
+check("Measure records the load's LCP, once per recording", async (page) => {
+  await setMode(page, "measure");
+  await page.waitForTimeout(300);
+  const lcp = (await page.evaluate(() => window.__annotatorPerfTake())).filter((e) => e.kind === "lcp");
+  assert.strictEqual(lcp.length, 1, "exactly one lcp entry: " + JSON.stringify(lcp));
+  assert.ok(lcp[0].ms > 0 && /\/login/.test(lcp[0].url) && lcp[0].element, JSON.stringify(lcp[0]));
+});
+
+check("a client navigation that hits the server carries ttfbMs", async (page) => {
+  await setMode(page, "measure");
+  await page.evaluate(() => window.__annotatorPerfTake());
+  await page.evaluate(() => window.next.router.push("/login?gate=" + Date.now()));
+  await page.waitForTimeout(2000);
+  const navs = (await page.evaluate(() => window.__annotatorPerfTake())).filter((e) => e.kind === "nav");
+  assert.ok(navs.length > 0, "a nav entry was recorded");
+  const hit = navs.find((n) => !n.servedFromCache);
+  if (!hit) { console.log("     NOTE every nav was cache-served; ttfbMs not exercised this run"); return; }
+  assert.strictEqual(typeof hit.ttfbMs, "number", JSON.stringify(hit));
+  assert.ok("serverTiming" in hit, "serverTiming field present (null: this app sends no header)");
+  console.log("     " + hit.to.replace(/^https?:\/\/[^/]+/, "") + " rscMs " + hit.rscMs + " ttfbMs " + hit.ttfbMs);
+});
+
 // ---- checks end ----
 
 (async () => {

@@ -58,14 +58,17 @@
         rec.__done = true;
         if (pendingNav === rec) pendingNav = null;
         clearTimeout(navTimer);
-        if (entry) { rec.servedFromCache = false; rec.rscMs = Math.round(entry.duration); }
+        if (entry) {
+          rec.servedFromCache = false; rec.rscMs = Math.round(entry.duration);
+          rec.ttfbMs = core.ttfbOf(entry); rec.serverTiming = core.serverTimingOf(entry);
+        }
         delete rec.__done;
         buf.push(rec); notify();
       }
       function onUrlChange(from, to) {
         if (from === to) return;
         var t0 = performance.now();
-        var rec = { t: stamp(), kind: "nav", from: from, to: to, servedFromCache: true, rscMs: null, toPaintMs: null };
+        var rec = { t: stamp(), kind: "nav", from: from, to: to, servedFromCache: true, rscMs: null, ttfbMs: null, serverTiming: null, toPaintMs: null };
         requestAnimationFrame(function () {
           requestAnimationFrame(function () { rec.toPaintMs = Math.round(performance.now() - t0); });
         });
@@ -120,10 +123,10 @@
       // --- images, layout shifts, long tasks ---
       // Each observer is wrapped individually: an entry type this browser does not support
       // must cost us that one signal, not the whole mode.
-      var watch = function (type, handler) {
+      var watch = function (type, handler, buffered) {
         try {
           var o = new PerformanceObserver(handler);
-          o.observe({ type: type, buffered: false });
+          o.observe({ type: type, buffered: !!buffered });
           obs.push(o);
         } catch (e) {}
       };
@@ -142,6 +145,7 @@
             ttfbMs: Math.round(e.responseStart ? e.responseStart - e.startTime : 0),
             transferSize: e.transferSize, decodedBodySize: e.decodedBodySize,
             status: e.responseStatus != null ? e.responseStatus : null,
+            serverTiming: core.serverTimingOf(e),
           });
         });
         notify();
@@ -158,6 +162,25 @@
         notify();
       });
 
+      // --- largest contentful paint ---
+      // Buffered, because recording starts long after the load LCP describes.
+      // One entry per recording, updated in place as later candidates arrive:
+      // pushing every candidate would let Compare average the hero image with the
+      // heading that painted before it.
+      // ponytail: an entry drained by the watch loop before a later candidate
+      // lands keeps the earlier value on the agent's side. LCP settles within a
+      // few seconds of load and the loop drains every ~25s, so it rarely bites.
+      var lcpRec = null;
+      var loadPath = (performance.getEntriesByType("navigation")[0] || {}).name || location.href;
+      watch("largest-contentful-paint", function (list) {
+        var all = list.getEntries(), e = all[all.length - 1];
+        if (!e) return;
+        var ms = Math.round(e.startTime), el = e.element ? e.element.tagName.toLowerCase() : null;
+        if (lcpRec) { lcpRec.t = ms; lcpRec.ms = ms; lcpRec.size = e.size; lcpRec.element = el; }
+        else { lcpRec = { t: ms, kind: "lcp", url: loadPath, ms: ms, size: e.size, element: el }; buf.push(lcpRec); }
+        notify();
+      }, true);
+
       perfStop = function () {
         obs.forEach(function (o) { try { o.disconnect(); } catch (e) {} });
         window.fetch = origFetch;
@@ -165,7 +188,7 @@
         window.removeEventListener("popstate", onPop);
         clearTimeout(navTimer);
       };
-      console.log("[annotate] measure mode ON — recording navigations, actions, images, shifts, long tasks");
+      console.log("[annotate] measure mode ON — recording navigations, actions, images, LCP, shifts, long tasks");
     }
 
     function stop() { if (perfStop) { perfStop(); perfStop = null; } }

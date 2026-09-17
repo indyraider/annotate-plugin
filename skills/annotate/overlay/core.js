@@ -116,6 +116,7 @@
     if (e.kind === "nav") return "nav " + normalisePath(e.from) + " -> " + normalisePath(e.to);
     if (e.kind === "action") return "action " + normalisePath(e.url);
     if (e.kind === "img") return "img " + normalisePath(e.url);
+    if (e.kind === "lcp") return "lcp " + normalisePath(e.url);
     if (e.kind === "dropped") return null;              // bookkeeping, not a measurement
     return e.kind;
   }
@@ -619,6 +620,21 @@
     };
   }
 
+  // Pure: time to first byte, the server's think time. null when the browser
+  // hides the timing (cross-origin without Timing-Allow-Origin zeroes both
+  // fields), because a 0 here would read as "instant".
+  function ttfbOf(entry) {
+    if (!entry || !entry.requestStart || !entry.responseStart) return null;
+    return Math.round(entry.responseStart - entry.requestStart);
+  }
+
+  // Pure: the Server-Timing header, when the app sends one. null when it does not.
+  function serverTimingOf(entry) {
+    var st = entry && entry.serverTiming;
+    if (!st || !st.length) return null;
+    return Array.prototype.map.call(st, function (s) { return { name: s.name, ms: Math.round(s.duration), desc: s.description || "" }; });
+  }
+
   function firstFamily(value) {
     if (!value) return "";
     var m = FIRST_FAMILY_RE.exec(String(value));
@@ -642,6 +658,6 @@
     summariseRun: summariseRun, compareRuns: compareRuns,
     parseDebugStack: parseDebugStack, nextDistDir: nextDistDir,
     toNextFrameFile: toNextFrameFile, firstAppFrame: firstAppFrame,
-    createRecentLog: createRecentLog,
+    createRecentLog: createRecentLog, ttfbOf: ttfbOf, serverTimingOf: serverTimingOf,
   };
 });

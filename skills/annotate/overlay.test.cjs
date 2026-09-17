@@ -2095,6 +2095,29 @@ const contextHookCheck = (function () {
   });
 })();
 
+// ---- Phase 3: Measure — LCP and server think-time ----
+// "Felt slow" vs "the server took 900ms". TTFB is always there same-origin;
+// Server-Timing only when the app sends the header (Tideswell does not, 2026-09-17).
+assert.strictEqual(core.ttfbOf({ requestStart: 100.2, responseStart: 340.9 }), 241);
+assert.strictEqual(core.ttfbOf({ requestStart: 0, responseStart: 0 }), null, "opaque cross-origin timing is null, never a fake 0ms");
+assert.strictEqual(core.ttfbOf(null), null);
+assert.deepStrictEqual(core.serverTimingOf({ serverTiming: [{ name: "db", duration: 812.4, description: "query" }, { name: "render", duration: 40 }] }),
+  [{ name: "db", ms: 812, desc: "query" }, { name: "render", ms: 40, desc: "" }]);
+assert.strictEqual(core.serverTimingOf({ serverTiming: [] }), null, "no header -> null, not an empty list that reads like a measurement");
+assert.strictEqual(core.serverTimingOf({}), null);
+assert.strictEqual(core.entryKey({ kind: "lcp", url: "http://localhost:3000/tasks?x=1" }), "lcp /tasks", "LCP pairs across runs by page");
+{
+  const r = core.compareRuns([{ kind: "lcp", url: "/tasks", ms: 900 }, { kind: "lcp", url: "/tasks", ms: 1000 }],
+                             [{ kind: "lcp", url: "/tasks", ms: 400 }, { kind: "lcp", url: "/tasks", ms: 420 }]);
+  assert.strictEqual(r.rows[0].key, "lcp /tasks");
+  assert.strictEqual(r.rows[0].verdict, "faster", "Compare reads LCP like any other ms metric");
+}
+{
+  const src = codeOf(fs.readFileSync(MOD("measure.js"), "utf8"));
+  assert.ok(/watch\("largest-contentful-paint", [\s\S]*?\}, true\);/.test(src), "LCP is observed buffered — recording starts long after the load it describes");
+  assert.ok(/rec\.ttfbMs = core\.ttfbOf\(entry\)/.test(src), "a server-hit nav carries its TTFB");
+}
+
 Promise.all([
   contextHookCheck,
   // Raced against a deadline, because the failure this suite hit for real was a
