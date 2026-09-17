@@ -149,7 +149,7 @@
                : "Alt+click to pick a link or button without following it.");
       } else if (m === "on") {
         uiHandles.setClickHint("Leave a comment");
-        uiHandles.setModeTools(uiHandles.toolsText("Click an element to comment · hold Shift to click through"));
+        uiHandles.setModeTools(uiHandles.toolsText("Click an element to comment · ⌘/Ctrl+click to gather several · hold Shift to click through"));
       } else {
         uiHandles.setClickHint("Leave a comment");
         uiHandles.setModeTools(null);

@@ -2036,6 +2036,16 @@ assert.strictEqual(core.firstAppFrame(null), null, "endpoint returned nothing ->
   assert.ok(/if \(box\) \{ ui\.hideInspector\(\); return; \}/.test(src), "while the box is open, mousemove no longer moves the highlight off the target");
 }
 
+// ---- Phase 3: multi-select ----
+// ⌘/Ctrl, not Shift: Shift is Point's peek, and taking it would break click-through.
+{
+  const src = codeOf(fs.readFileSync(MOD("point.js"), "utf8"));
+  assert.ok(/if \(e\.metaKey \|\| e\.ctrlKey\) \{ togglePick\(el\); return; \}/.test(src), "⌘/Ctrl+click toggles a pick instead of opening the box");
+  assert.ok(/if \(e\.shiftKey\) return;\s+\/\/ peek/.test(src), "Shift still means peek");
+  assert.ok(/others: els\.slice\(1\)/.test(src), "extra elements ride along as others[]");
+  assert.ok(/function disable\(\)[\s\S]*?clearPicks\(\)/.test(src), "leaving Point clears the pick outlines");
+}
+
 Promise.all([
   // Raced against a deadline, because the failure this suite hit for real was a
   // promise that NEVER settled: Node then exits 0 with no output, and a test

@@ -172,6 +172,22 @@
 
     // ---- comment box, badge, paste/drop ----
     function btn(label, primary) { var b = document.createElement("button"); b.textContent = label; Object.assign(b.style, { background: primary ? pal.accent : pal.hover, color: primary ? pal.accentFg : pal.text, border: primary ? "none" : "1px solid " + pal.border, borderRadius: "6px", padding: "5px 10px", font: "600 12px " + SANS, cursor: "pointer" }); return b; }
+    // ---- multi-select: ⌘/Ctrl+click gathers elements into the next comment ----
+    // Not Shift, which the spec first named: Shift is already "peek", the
+    // click-through Point users rely on, and taking it would break that.
+    var picks = [];                                  // [{ el, mark }]
+    function togglePick(el) {
+      for (var i = 0; i < picks.length; i++) {
+        if (picks[i].el === el) { picks[i].mark.remove(); picks.splice(i, 1); return; }
+      }
+      var r = el.getBoundingClientRect();
+      var mark = document.createElement("div"); mark.className = "__ann-ui"; mark.setAttribute("data-ann-pick", "");
+      Object.assign(mark.style, { position: "absolute", left: (r.left + window.scrollX - 3) + "px", top: (r.top + window.scrollY - 3) + "px", width: (r.width + 6) + "px", height: (r.height + 6) + "px", border: "2px dashed " + pal.accent, borderRadius: "5px", boxSizing: "border-box", pointerEvents: "none", zIndex: Z - 1 });
+      document.body.appendChild(mark);
+      picks.push({ el: el, mark: mark });
+    }
+    function clearPicks() { picks.forEach(function (p) { p.mark.remove(); }); picks = []; }
+
     var box = null, target = null, pendingImage = null, pendingShot = null;
     function openComment(el, x, y, shot) {
       closeComment(); target = el; pendingShot = shot || null;
@@ -189,7 +205,7 @@
       function parentOf(n) { var p = n.parentElement; return p && p !== document.documentElement ? p : null; }
       function paintWhere() {
         var cls = (typeof target.className === "string" && target.className.trim()) ? "." + target.className.trim().split(/\s+/).slice(0, 2).join(".") : "";
-        where.textContent = target.tagName.toLowerCase() + cls;
+        where.textContent = target.tagName.toLowerCase() + cls + (picks.length ? "  + " + picks.length + " more" : "");
         upBtn.disabled = !parentOf(target); downBtn.disabled = !trail.length;
         ui.showHighlight(target);
       }
@@ -260,8 +276,13 @@
       Object.assign(hint.style, { flex: "1", font: "10px " + SANS, color: pal.text3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" });
       hint.textContent = IDLE_HINT;
       var cancel = btn("Cancel", false), saveBtn = btn("Save", true);
-      var submit = function () { var v = ta.value.trim(); if (v) record(target, v, pendingImage, pendingShot); closeComment(); };
-      cancel.onclick = closeComment; saveBtn.onclick = submit;
+      var submit = function () {
+        var v = ta.value.trim();
+        var els = [target].concat(picks.map(function (p) { return p.el; }).filter(function (x) { return x !== target; }));
+        if (v) record(els, v, pendingImage, pendingShot);
+        clearPicks(); closeComment();
+      };
+      cancel.onclick = function () { clearPicks(); closeComment(); }; saveBtn.onclick = submit;
       ta.addEventListener("keydown", function (e) {
         if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); submit(); }
         else if (e.altKey && e.key === "ArrowUp") { e.preventDefault(); walkUp(); }
@@ -285,18 +306,22 @@
 
     // seq lives here, not in index.js: no other mode assigns annotation ids.
     var seq = window.__annotations.reduce(function (m, a) { return Math.max(m, a.n || 0); }, 0);
-    function record(el, comment, image, shot) {
+    function record(els, comment, image, shot) {
       seq += 1;
-      var a = { id: "a" + seq, n: seq, selector: buildSelector(el), descriptor: describe(el), comment: comment, url: location.pathname + location.search, ts: new Date().toISOString(), status: "resolving", hasImage: !!image, hasShot: !!shot };
+      var el = els[0];
+      var a = { id: "a" + seq, n: seq, selector: buildSelector(el), descriptor: describe(el),
+        others: els.slice(1).map(function (o) { return { selector: buildSelector(o), descriptor: describe(o) }; }),
+        comment: comment, url: location.pathname + location.search, ts: new Date().toISOString(), status: "resolving", hasImage: !!image, hasShot: !!shot };
       // Neither image rides along in the annotation — the agent pulls each by id.
       if (image) putImage(a.id, image);
       if (shot) putImage(a.id + "-shot", shot);
       // Saved, persisted and badged NOW, so a navigation in the next second
-      // cannot lose the comment. Handed to the agent only once the lookup
+      // cannot lose the comment. Handed to the agent only once every lookup
       // settles, so the agent never reads a source that is still on its way.
-      save(a); persist(); addBadge(el, seq); notify();
-      resolveSource(el).then(function (src) {
-        a.descriptor.source = src;
+      save(a); persist(); els.forEach(function (x) { addBadge(x, seq); }); notify();
+      Promise.all(els.map(resolveSource)).then(function (srcs) {
+        a.descriptor.source = srcs[0];
+        a.others.forEach(function (o, i) { o.descriptor.source = srcs[i + 1]; });
         a.status = "new";
         persist(); wake(); notify();
       });
@@ -335,6 +360,7 @@
       if (ui.isOurs(e.target)) return;
       e.preventDefault(); e.stopPropagation();
       var el = e.target, x = e.clientX, y = e.clientY;
+      if (e.metaKey || e.ctrlKey) { togglePick(el); return; }
       // Shot first, box second. The tooltip or open menu Matt is pointing at is on
       // screen NOW; the box would cover it, and processing time is far too late.
       // The highlight ring stays in the shot on purpose: it marks what was clicked.
@@ -345,7 +371,11 @@
       });
     }
     // Escape only matters while the comment box can be open, i.e. while enabled.
-    function onKeydown(e) { if (e.key === "Escape" && box) closeComment(); }
+    // First Escape closes the box, the next one drops the picks.
+    function onKeydown(e) {
+      if (e.key !== "Escape") return;
+      if (box) closeComment(); else if (picks.length) clearPicks();
+    }
 
     var attached = false;
     function enable() {
@@ -369,7 +399,7 @@
       document.removeEventListener("auxclick", onAuxclick, true);
       document.removeEventListener("click", onClick, true);
       document.removeEventListener("keydown", onKeydown, true);
-      ui.hideHighlight(); ui.hideInspector(); closeComment();
+      ui.hideHighlight(); ui.hideInspector(); closeComment(); clearPicks();
     }
 
     // Scroll a saved annotation's element into view. Selector first; if the DOM shifted

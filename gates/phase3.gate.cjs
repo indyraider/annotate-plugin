@@ -101,6 +101,18 @@ check("Alt+↑ in the comment box moves the comment to the parent element", asyn
   assert.ok(ok, "saved selector is the input's parent: " + a.selector);
 });
 
+check("⌘/Ctrl+click gathers several elements into one comment", async (page) => {
+  await setMode(page, "on");
+  await page.click("main h1", { modifiers: ["ControlOrMeta"] });
+  await page.click("main button", { modifiers: ["ControlOrMeta"] });
+  assert.strictEqual(await page.evaluate(() => document.querySelectorAll("[data-ann-pick]").length), 2, "two pick outlines on screen");
+  const a = await comment(page, INPUT, "gate: multi");
+  assert.strictEqual(a.others.length, 2, "others: " + JSON.stringify(a.others.map((o) => o.selector)));
+  assert.ok(a.others.every((o) => o.selector && o.descriptor && "source" in o.descriptor), "each extra carries selector, descriptor and source");
+  assert.ok(a.others.some((o) => o.descriptor.source && o.descriptor.source.file === "src/app/login/page.tsx"), "the h1 pick resolved its own source");
+  assert.strictEqual(await page.evaluate(() => document.querySelectorAll("[data-ann-pick]").length), 0, "outlines cleared after save");
+});
+
 // ---- checks end ----
 
 (async () => {
