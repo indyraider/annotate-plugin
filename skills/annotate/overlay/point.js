@@ -22,6 +22,51 @@
   // first, unwrapped one.
   if (typeof window !== "undefined" && !window.__annotatorRawFetch) window.__annotatorRawFetch = window.fetch;
 
+  // ---- silent context: hooked at LOAD, not in create() ----
+  // The error worth knowing about happened before the click that reported it,
+  // and create() only runs when the agent calls setup(). addInitScript injects
+  // this module ahead of the page's own scripts, so hooking here sees the app
+  // from its first line. The logs live on window so a second copy of this module
+  // adds no second set of hooks and reads the same history.
+  // ponytail: fetch only; XMLHttpRequest failures are not captured. Add an XHR
+  // hook if an app that still uses it shows up.
+  if (typeof window !== "undefined" && !window.__annotatorContext) {
+    var clip = function (v) { return String(v).slice(0, 300); };
+    var text = function (v) {
+      if (v instanceof Error) return v.stack || v.message;
+      if (v && typeof v === "object") { try { return JSON.stringify(v); } catch (e) { return String(v); } }
+      return String(v);
+    };
+    var log = window.__annotatorContext = { errors: core.createRecentLog(20), requests: core.createRecentLog(20) };
+    var pageConsoleError = console.error;
+    console.error = function () {
+      try { log.errors.push({ t: Date.now(), source: "console.error", message: clip(Array.prototype.map.call(arguments, text).join(" ")) }); } catch (e) {}
+      return pageConsoleError.apply(this, arguments);
+    };
+    window.addEventListener("error", function (e) {
+      var t = e.target;
+      // A failed <img>/<script>/<link> fires a non-bubbling error that only a
+      // capture listener on window sees. It carries the URL and no status.
+      if (t && t !== window && (t.src || t.href)) log.requests.push({ t: Date.now(), url: clip(t.src || t.href), status: null, error: "<" + String(t.tagName).toLowerCase() + "> failed to load" });
+      else log.errors.push({ t: Date.now(), source: "uncaught", message: clip((e.error && e.error.stack) || e.message) });
+    }, true);
+    window.addEventListener("unhandledrejection", function (e) {
+      log.errors.push({ t: Date.now(), source: "unhandledrejection", message: clip(text(e.reason)) });
+    });
+    var pageFetch = window.fetch;
+    if (pageFetch) window.fetch = function (input) {
+      var url = typeof input === "string" ? input : (input && input.url) || String(input);
+      // Always delegates, always re-throws: the app sees exactly what it would unwrapped.
+      return pageFetch.apply(this, arguments).then(function (res) {
+        if (!res.ok && res.type !== "opaque") log.requests.push({ t: Date.now(), url: clip(url), status: res.status, error: null });
+        return res;
+      }, function (err) {
+        log.requests.push({ t: Date.now(), url: clip(url), status: null, error: clip(text(err)) });
+        throw err;
+      });
+    };
+  }
+
   // ctx = { pal, ui, state, save, persist, notify } — see index.js (Task 5).
   function create(ctx) {
     var pal = ctx.pal, ui = ctx.ui, state = ctx.state, save = ctx.save, wake = ctx.wake, persist = ctx.persist, notify = ctx.notify;
@@ -304,6 +349,16 @@
       pin.appendChild(inner); document.body.appendChild(pin);
     }
 
+    // Page-wide, not per-element: an error cannot be traced to the element it
+    // broke. What is honest is "this happened on the page in the 30s before".
+    var CONTEXT_WINDOW_MS = 30000;
+    function recentContext() {
+      var log = window.__annotatorContext;
+      if (!log) return null;
+      var since = Date.now() - CONTEXT_WINDOW_MS;
+      return { windowMs: CONTEXT_WINDOW_MS, errors: log.errors.since(since), failedRequests: log.requests.since(since) };
+    }
+
     // seq lives here, not in index.js: no other mode assigns annotation ids.
     var seq = window.__annotations.reduce(function (m, a) { return Math.max(m, a.n || 0); }, 0);
     function record(els, comment, image, shot) {
@@ -311,7 +366,7 @@
       var el = els[0];
       var a = { id: "a" + seq, n: seq, selector: buildSelector(el), descriptor: describe(el),
         others: els.slice(1).map(function (o) { return { selector: buildSelector(o), descriptor: describe(o) }; }),
-        comment: comment, url: location.pathname + location.search, ts: new Date().toISOString(), status: "resolving", hasImage: !!image, hasShot: !!shot };
+        comment: comment, url: location.pathname + location.search, ts: new Date().toISOString(), status: "resolving", hasImage: !!image, hasShot: !!shot, context: recentContext() };
       // Neither image rides along in the annotation — the agent pulls each by id.
       if (image) putImage(a.id, image);
       if (shot) putImage(a.id + "-shot", shot);

@@ -113,6 +113,21 @@ check("⌘/Ctrl+click gathers several elements into one comment", async (page) =
   assert.strictEqual(await page.evaluate(() => document.querySelectorAll("[data-ann-pick]").length), 0, "outlines cleared after save");
 });
 
+check("a comment carries the page's recent console errors and failed requests", async (page) => {
+  // /_next/static/* is outside the auth middleware, so this is a genuine 404.
+  // Other unknown paths redirect to /login and come back 200.
+  await page.evaluate(async () => {
+    console.error("gate-boom");
+    await fetch("/_next/static/gate-missing.js").catch(() => {});
+  });
+  const a = await comment(page, "main h1", "gate: context");
+  assert.ok(a.context, "context present");
+  assert.ok(a.context.errors.some((e) => /gate-boom/.test(e.message)), "console.error captured: " + JSON.stringify(a.context.errors));
+  const req = a.context.failedRequests.find((r) => /gate-missing\.js/.test(r.url));
+  assert.ok(req && req.status === 404, "404 captured with its status: " + JSON.stringify(a.context.failedRequests));
+  assert.ok(!a.context.failedRequests.some((r) => /__nextjs_original-stack-frames/.test(r.url)), "the overlay's own source lookup is not reported as page traffic");
+});
+
 // ---- checks end ----
 
 (async () => {

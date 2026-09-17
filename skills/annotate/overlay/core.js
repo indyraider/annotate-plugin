@@ -605,6 +605,20 @@
     return hit;
   }
 
+  // Pure: a capped log a comment can ask "what happened in the last N seconds?".
+  // since() hands out copies: a comment's saved context must not change later.
+  function createRecentLog(cap) {
+    var items = [];
+    return {
+      push: function (e) { items.push(e); if (items.length > cap) items.shift(); },
+      since: function (t) {
+        return items.filter(function (e) { return e.t >= t; }).map(function (e) {
+          var c = {}; for (var k in e) c[k] = e[k]; return c;
+        });
+      }
+    };
+  }
+
   function firstFamily(value) {
     if (!value) return "";
     var m = FIRST_FAMILY_RE.exec(String(value));
@@ -628,5 +642,6 @@
     summariseRun: summariseRun, compareRuns: compareRuns,
     parseDebugStack: parseDebugStack, nextDistDir: nextDistDir,
     toNextFrameFile: toNextFrameFile, firstAppFrame: firstAppFrame,
+    createRecentLog: createRecentLog,
   };
 });

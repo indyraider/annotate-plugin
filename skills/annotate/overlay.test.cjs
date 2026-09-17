@@ -2046,7 +2046,57 @@ assert.strictEqual(core.firstAppFrame(null), null, "endpoint returned nothing ->
   assert.ok(/function disable\(\)[\s\S]*?clearPicks\(\)/.test(src), "leaving Point clears the pick outlines");
 }
 
+// ---- Phase 3: silent context ----
+const rl = core.createRecentLog(3);
+[1, 2, 3, 4].forEach((t) => rl.push({ t, n: t }));
+assert.deepStrictEqual(rl.since(0).map((e) => e.n), [2, 3, 4], "caps at 3, oldest out first");
+assert.deepStrictEqual(rl.since(3).map((e) => e.n), [3, 4], "since() is inclusive");
+const rlCopy = rl.since(0); rlCopy[0].n = 99;
+assert.strictEqual(rl.since(0)[0].n, 2, "since() hands out copies, so a saved comment's context cannot change afterwards");
+
+// The hooks run at module LOAD in a real page. Prove them in a sandbox that has
+// a window, and prove a second copy of the module adds no second hook.
+const vm = require("node:vm");
+const contextHookCheck = (function () {
+  const seen = [];
+  const sb = { console: { error: function () { seen.push([].slice.call(arguments)); } }, Error: Error, JSON: JSON, Date: Date, Promise: Promise, String: String, Array: Array, Object: Object, listeners: {} };
+  sb.self = sb; sb.window = sb;
+  sb.addEventListener = function (type, fn) { sb.listeners[type] = sb.listeners[type] || []; sb.listeners[type].push(fn); };
+  sb.fetch = function (url) {
+    if (url === "/boom") return Promise.reject(new Error("offline"));
+    return Promise.resolve({ ok: url !== "/bad", status: url === "/bad" ? 404 : 200, type: "basic" });
+  };
+  const pageFetch = sb.fetch;
+  vm.createContext(sb);
+  for (const f of ["core.js", "palette.js", "point.js", "point.js"]) vm.runInContext(fs.readFileSync(MOD(f), "utf8"), sb, { filename: f });
+  const log = sb.__annotatorContext;
+  assert.ok(log, "point.js hooks the page at load when a window exists");
+  assert.strictEqual(sb.__annotatorRawFetch, pageFetch, "the unwrapped fetch is kept for the overlay's own lookups");
+  assert.strictEqual(sb.listeners.error.length, 1, "a second copy of point.js adds no second error hook");
+
+  sb.console.error("boom", { code: 7 });
+  assert.strictEqual(seen.length, 1, "console.error still reaches the page's console, exactly once");
+  assert.match(log.errors.since(0)[0].message, /boom \{"code":7\}/);
+  sb.listeners.error[0]({ target: { src: "http://x/a.png", tagName: "IMG" } });
+  sb.listeners.error[0]({ target: sb, error: new Error("kaboom"), message: "kaboom" });
+  sb.listeners.unhandledrejection[0]({ reason: "nope" });
+  // Array.from: arrays built inside the sandbox belong to its realm, and strict
+  // deep-equal rejects a foreign Array prototype even when every value matches.
+  assert.deepStrictEqual(Array.from(log.errors.since(0), (e) => e.source), ["console.error", "uncaught", "unhandledrejection"]);
+
+  return Promise.all([
+    sb.fetch("/ok"),
+    sb.fetch("/bad"),
+    sb.fetch("/boom").then(function () { throw new Error("the rejection was swallowed"); }, function (e) { assert.strictEqual(e.message, "offline", "the app sees the rejection unchanged"); })
+  ]).then(function (res) {
+    assert.strictEqual(res[1].status, 404, "the app gets its own response object back");
+    assert.deepStrictEqual(Array.from(log.requests.since(0), (r) => [r.url, r.status]),
+      [["http://x/a.png", null], ["/bad", 404], ["/boom", null]], "failed image, 404 and network failure are logged; the 200 is not");
+  });
+})();
+
 Promise.all([
+  contextHookCheck,
   // Raced against a deadline, because the failure this suite hit for real was a
   // promise that NEVER settled: Node then exits 0 with no output, and a test
   // that silently did not run looks exactly like a test that passed. A hang has
